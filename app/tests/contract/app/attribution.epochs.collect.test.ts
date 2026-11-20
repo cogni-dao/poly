@@ -23,6 +23,15 @@ import { TEST_SESSION_USER_1 } from "@tests/_fakes/ids";
 import { testApiHandler } from "next-test-api-route-handler";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const NODE_ID = "b927a9dd-6132-4fc9-a51e-e3cee2568e3c";
+// The operator-owned dispatch schedule for THIS node (bug.0026). Never the flat id.
+const OWN_LEDGER_SCHEDULE_ID = `governance:${NODE_ID}:ledger_ingest`;
+
+vi.mock("@/shared/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/config")>()),
+  getNodeId: () => NODE_ID,
+}));
+
 // Mock session authentication
 vi.mock("@/app/_lib/auth/session", () => ({
   getSessionUser: vi.fn(),
@@ -58,7 +67,7 @@ import { getSessionUser } from "@/app/_lib/auth/session";
 import * as appHandler from "@/app/api/v1/attribution/epochs/collect/route";
 
 const SCHEDULE_DESCRIPTION = {
-  scheduleId: "governance:ledger_ingest",
+  scheduleId: OWN_LEDGER_SCHEDULE_ID,
   nextRunAtIso: "2026-03-08T06:00:00.000Z",
   lastRunAtIso: "2026-03-07T06:00:00.000Z",
   isPaused: false,
@@ -154,9 +163,15 @@ describe("POST /api/v1/attribution/epochs/collect", () => {
         const parsed = CollectTriggerResponseSchema.parse(body);
         expect(parsed).toEqual({
           triggered: true,
-          scheduleId: "governance:ledger_ingest",
+          scheduleId: OWN_LEDGER_SCHEDULE_ID,
         });
+        expect(mockScheduleControl.describeSchedule).toHaveBeenCalledWith(
+          OWN_LEDGER_SCHEDULE_ID
+        );
         expect(mockScheduleControl.triggerSchedule).toHaveBeenCalledWith(
+          OWN_LEDGER_SCHEDULE_ID
+        );
+        expect(mockScheduleControl.triggerSchedule).not.toHaveBeenCalledWith(
           "governance:ledger_ingest"
         );
       },

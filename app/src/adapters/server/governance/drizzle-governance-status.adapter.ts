@@ -53,7 +53,8 @@ export class DrizzleGovernanceStatusAdapter implements GovernanceStatusPort {
         .flatMap((row) => {
           const tid = row.temporalScheduleId;
           if (tid == null) return [];
-          const rawName = tid.replace(/^governance:/, "");
+          // `governance:{nodeId}:{charter}` → `{charter}` (legacy flat `governance:{charter}` too).
+          const rawName = tid.replace(/^governance:(?:[^:]+:)?/, "");
           const name = rawName.charAt(0).toUpperCase() + rawName.slice(1);
           const nextRunAt = cronParser
             .parseExpression(row.cron, { currentDate: now, tz: row.timezone })
