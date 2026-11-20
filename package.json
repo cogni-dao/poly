@@ -9,6 +9,7 @@
     "packages:build": "pnpm build:packages",
     "build:app": "pnpm --filter @cogni/node-template-app build",
     "check:workflow": "node scripts/check-node-ci-workflow.mjs && node scripts/check-node-ci-workflow.test.mjs",
+    "check:design-tokens": "pnpm --filter @cogni/node-template-app exec ui-theme-check src/styles/tailwind.css",
     "check:declarations": "node scripts/check-node-declarations.mjs",
     "check:markdown-refs": "node scripts/check-markdown-refs.mjs",
     "conductor:setup": "bash scripts/conductor-worktree-setup.sh",
