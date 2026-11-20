@@ -61,10 +61,8 @@ export {
   SidebarInset,
   SidebarMenu,
   SidebarMenuAction,
-  SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
-  SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
@@ -167,6 +165,7 @@ export { PageSkeleton } from "./kit/layout/PageSkeleton";
 export { SectionCard } from "./kit/layout/SectionCard";
 export { MobileNav } from "./kit/navigation/MobileNav";
 export { NavigationLink } from "./kit/navigation/NavigationLink";
+export { SidebarMenuButton, SidebarMenuSubButton } from "./kit/navigation/SidebarButtons";
 export { UsdcPaymentFlow } from "./kit/payments/UsdcPaymentFlow";
 export { Hero } from "./kit/sections";
 export {
