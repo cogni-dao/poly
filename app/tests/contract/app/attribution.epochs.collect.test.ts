@@ -23,6 +23,8 @@ import { TEST_SESSION_USER_1 } from "@tests/_fakes/ids";
 import { testApiHandler } from "next-test-api-route-handler";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/shared/config", () => ({ getNodeId: () => "collect-node" }));
+
 // Mock session authentication
 vi.mock("@/app/_lib/auth/session", () => ({
   getSessionUser: vi.fn(),
@@ -58,7 +60,7 @@ import { getSessionUser } from "@/app/_lib/auth/session";
 import * as appHandler from "@/app/api/v1/attribution/epochs/collect/route";
 
 const SCHEDULE_DESCRIPTION = {
-  scheduleId: "governance:ledger_ingest",
+  scheduleId: "governance:collect-node:ledger_ingest",
   nextRunAtIso: "2026-03-08T06:00:00.000Z",
   lastRunAtIso: "2026-03-07T06:00:00.000Z",
   isPaused: false,
@@ -96,7 +98,10 @@ describe("POST /api/v1/attribution/epochs/collect", () => {
   });
 
   it("returns 404 when schedule does not exist", async () => {
-    mockScheduleControl.describeSchedule.mockResolvedValue(null);
+    mockScheduleControl.describeSchedule.mockImplementation(
+      async (id: string) =>
+        id === "governance:ledger_ingest" ? SCHEDULE_DESCRIPTION : null
+    );
 
     await testApiHandler({
       appHandler,
@@ -109,6 +114,11 @@ describe("POST /api/v1/attribution/epochs/collect", () => {
         expect(res.status).toBe(404);
         const body = await res.json();
         expect(body.error).toContain("LEDGER_INGEST");
+        expect(
+          mockScheduleControl.describeSchedule
+        ).toHaveBeenCalledExactlyOnceWith(
+          "governance:collect-node:ledger_ingest"
+        );
         expect(mockScheduleControl.triggerSchedule).not.toHaveBeenCalled();
       },
     });
@@ -152,12 +162,17 @@ describe("POST /api/v1/attribution/epochs/collect", () => {
         expect(res.status).toBe(200);
         const body = await res.json();
         const parsed = CollectTriggerResponseSchema.parse(body);
+        expect(
+          mockScheduleControl.describeSchedule
+        ).toHaveBeenCalledExactlyOnceWith(
+          "governance:collect-node:ledger_ingest"
+        );
         expect(parsed).toEqual({
           triggered: true,
-          scheduleId: "governance:ledger_ingest",
+          scheduleId: "governance:collect-node:ledger_ingest",
         });
         expect(mockScheduleControl.triggerSchedule).toHaveBeenCalledWith(
-          "governance:ledger_ingest"
+          "governance:collect-node:ledger_ingest"
         );
       },
     });

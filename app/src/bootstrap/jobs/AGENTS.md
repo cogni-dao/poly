@@ -44,7 +44,7 @@ Job modules that wire business logic to the application container for ops-trigge
 
 ## Standards
 
-- Jobs use PostgreSQL advisory locks for single-writer safety. Governance sync uses native Drizzle transactions and nonblocking transaction locks; all service callbacks use the lock-owning transaction. Native completion owns cleanup. Its post-commit eager trigger reacquires the guard and revalidates the committed enabled row; native failures propagate. Read [governance-schedule-sync](https://node-template.cognidao.org/knowledge/governance-schedule-sync) before changing these boundaries.
+- Jobs use PostgreSQL advisory locks for single-writer safety. Governance sync uses native Drizzle transactions and nonblocking transaction locks; all service callbacks use the lock-owning transaction. Native completion owns cleanup. The bounded local prune preflight precedes effects; sovereign sync never triggers operator-owned ledger collection. Native failures propagate. Read [governance-schedule-sync](https://node-template.cognidao.org/knowledge/governance-schedule-sync) before changing these boundaries.
 - Jobs import services from `@cogni/scheduler-core`, not from features
 
 ## Dependencies

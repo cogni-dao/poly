@@ -6,7 +6,7 @@
  * Purpose: Job module that wires governance schedule sync to the application container.
  * Scope: Acquires advisory lock, resolves dependencies from container, and calls syncGovernanceSchedules. Does not contain business logic.
  * Invariants:
- *   - SINGLE_WRITER: native transactions hold a try-advisory lock through reconciliation or guarded eager dispatch
+ *   - SINGLE_WRITER: native transactions hold a try-advisory lock through reconciliation
  *   - SESSION_OWNS_QUERIES: service callbacks use the transaction that owns the lock; native completion owns cleanup
  *   - GRANT_VIA_PORT: Uses ensureGrant on ExecutionGrantUserPort, no raw SQL
  *   - SYSTEM_PRINCIPAL: Grant created for COGNI_SYSTEM_PRINCIPAL_USER_ID
@@ -22,7 +22,7 @@ import {
 } from "@cogni/node-shared";
 import { syncGovernanceSchedules } from "@cogni/scheduler-core";
 import cronParser from "cron-parser";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getContainer } from "@/bootstrap/container";
 import { getGovernanceConfig, getNodeId } from "@/shared/config";
@@ -31,8 +31,8 @@ import { serverEnv } from "@/shared/env/server-env";
 
 const GOVERNANCE_GRANT_SCOPES = ["graph:execute:sandbox:openclaw"] as const;
 
-/** Temporal schedule ID for the ledger-ingest (epoch) schedule. */
-const LEDGER_INGEST_SCHEDULE_ID = "governance:ledger_ingest";
+/** Fail closed rather than reconcile a truncated local row set. */
+const GOVERNANCE_PRUNE_MAX_ROWS = 1000;
 
 function computeNextRun(cron: string, timezone: string): Date {
   const interval = cronParser.parseExpression(cron, {
@@ -70,7 +70,6 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
   log.info({}, "Starting governance schedule sync job");
 
   const serviceDb = getServiceDb();
-  let ledgerScheduleRowId: string | undefined;
   const result = await serviceDb.transaction(async (lockedDb) => {
     const [lockRow] = await lockedDb.execute<{ acquired: boolean }>(
       sql`SELECT pg_try_advisory_xact_lock(hashtext('governance_sync')) AS acquired`
@@ -83,6 +82,37 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
     // Native transaction ownership keeps every service callback on this session.
     const config = getGovernanceConfig();
     const systemUserId = toUserId(COGNI_SYSTEM_PRINCIPAL_USER_ID);
+    const nodeId = getNodeId();
+    const prefix = `governance:${nodeId}:`;
+    const temporalId = schedules.temporalScheduleId;
+    // Literal, parameterized prefix matching: node IDs are never LIKE patterns.
+    const eligibleScope = sql`(
+      (left(${temporalId}, length(${prefix})) = ${prefix}
+        AND length(${temporalId}) > length(${prefix})
+        AND lower(substring(${temporalId} from length(${prefix}) + 1)) <> 'ledger_ingest')
+      OR (split_part(${temporalId}, ':', 1) = 'governance'
+        AND array_length(string_to_array(${temporalId}, ':'), 1) = 2)
+    )`;
+    const eligibleRows = and(
+      eq(schedules.ownerUserId, COGNI_SYSTEM_PRINCIPAL_USER_ID),
+      eq(schedules.enabled, true),
+      isNotNull(temporalId),
+      eligibleScope
+    );
+    const pruneRows = await lockedDb
+      .select({ id: schedules.id, temporalScheduleId: temporalId })
+      .from(schedules)
+      .where(eligibleRows)
+      .orderBy(asc(schedules.id))
+      .limit(GOVERNANCE_PRUNE_MAX_ROWS + 1);
+    if (pruneRows.length > GOVERNANCE_PRUNE_MAX_ROWS) {
+      throw new Error(
+        `Governance prune capacity exceeded (${GOVERNANCE_PRUNE_MAX_ROWS})`
+      );
+    }
+    const pruneIds = new Map(
+      pruneRows.map((row) => [row.temporalScheduleId, row.id])
+    );
 
     const result = await syncGovernanceSchedules(config, {
       ensureGovernanceGrant: async () => {
@@ -122,9 +152,6 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
               updatedAt: new Date(),
             })
             .where(eq(schedules.id, existing.id));
-          if (params.temporalScheduleId === LEDGER_INGEST_SCHEDULE_ID) {
-            ledgerScheduleRowId = existing.id;
-          }
           return existing.id;
         }
 
@@ -143,28 +170,25 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
           })
           .returning();
         if (!row) throw new Error("Insert returned no row");
-        if (params.temporalScheduleId === LEDGER_INGEST_SCHEDULE_ID) {
-          ledgerScheduleRowId = row.id;
-        }
         return row.id;
       },
       systemUserId: COGNI_SYSTEM_PRINCIPAL_USER_ID,
-      nodeId: getNodeId(),
+      nodeId,
       scheduleControl: container.scheduleControl,
-      listGovernanceScheduleIds: () =>
-        container.scheduleControl.listScheduleIds("governance:"),
+      listGovernanceScheduleIds: async () =>
+        pruneRows
+          .map((row) => row.temporalScheduleId)
+          .filter((id): id is string => id !== null),
       disableSchedule: async (temporalScheduleId: string) => {
-        // Direct DB update via the lock-owning transaction session (same pattern as upsertGovernanceScheduleRow).
-        // Cannot use ScheduleUserPort.updateSchedule here because the adapter
-        // passes DB UUID to scheduleControl.pauseSchedule() which expects a
-        // Temporal schedule ID — causing a rollback. The Temporal pause is
-        // already handled by the sync service's prune step.
+        const rowId = pruneIds.get(temporalScheduleId);
+        if (!rowId) throw new Error("Governance disable outside preflight set");
         await lockedDb
           .update(schedules)
           .set({ enabled: false, nextRunAt: null, updatedAt: new Date() })
           .where(
             and(
-              eq(schedules.ownerUserId, COGNI_SYSTEM_PRINCIPAL_USER_ID),
+              eligibleRows,
+              eq(schedules.id, rowId),
               eq(schedules.temporalScheduleId, temporalScheduleId)
             )
           );
@@ -177,51 +201,6 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
 
   if (!result) {
     return { created: 0, updated: 0, resumed: 0, skipped: 0, paused: 0 };
-  }
-
-  // Commit schedule rows before a workflow can read them. The optional trigger
-  // reacquires the same nonblocking guard and revalidates after any interleaving.
-  if (result.created.includes(LEDGER_INGEST_SCHEDULE_ID) && ledgerScheduleRowId) {
-    const committedRowId = ledgerScheduleRowId;
-    await serviceDb.transaction(async (triggerDb) => {
-      const [lockRow] = await triggerDb.execute<{ acquired: boolean }>(
-        sql`SELECT pg_try_advisory_xact_lock(hashtext('governance_sync')) AS acquired`
-      );
-      if (lockRow?.acquired !== true) {
-        log.info({}, "Eager epoch trigger skipped: governance sync already running");
-        return;
-      }
-      const [row] = await triggerDb
-        .select({ id: schedules.id })
-        .from(schedules)
-        .where(
-          and(
-            eq(schedules.id, committedRowId),
-            eq(schedules.ownerUserId, COGNI_SYSTEM_PRINCIPAL_USER_ID),
-            eq(schedules.temporalScheduleId, LEDGER_INGEST_SCHEDULE_ID),
-            eq(schedules.enabled, true)
-          )
-        )
-        .limit(1);
-      if (!row) {
-        log.info({}, "Eager epoch trigger skipped: schedule changed or disabled");
-        return;
-      }
-      try {
-        await container.scheduleControl.triggerSchedule(LEDGER_INGEST_SCHEDULE_ID);
-        log.info(
-          { scheduleId: LEDGER_INGEST_SCHEDULE_ID },
-          "Eager-triggered first epoch collection"
-        );
-      } catch (err) {
-        // An ambiguous acknowledgement can already have started execution.
-        // Never replay the optional trigger; cron remains the backstop.
-        log.warn(
-          { scheduleId: LEDGER_INGEST_SCHEDULE_ID, err },
-          "Eager epoch trigger failed — cron will open the first epoch"
-        );
-      }
-    });
   }
 
   log.info(

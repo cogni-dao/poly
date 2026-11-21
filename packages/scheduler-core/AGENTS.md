@@ -34,7 +34,7 @@ Pure TypeScript types, port interfaces, and orchestration services for the sched
 }
 ```
 
-**External deps:** `zod` (payload schemas), `type-fest` (JsonValue type). Internal deps: `@cogni/ids`.
+**External deps:** `zod` (payload schemas), `type-fest` (JsonValue type), `@cogni/scheduling` (published governance identity and ownership policy). Internal deps: `@cogni/ids`.
 
 ## Public Surface
 
@@ -83,7 +83,7 @@ pnpm --filter @cogni/scheduler-core build
 ## Dependencies
 
 - **Internal:** `@cogni/ids` (branded ID types for port signatures)
-- **External:** `zod` (payload schemas), `type-fest` (JsonValue type)
+- **External:** `zod` (payload schemas), `type-fest` (JsonValue type), `@cogni/scheduling` (public governance policy)
 
 ## Change Protocol
 
