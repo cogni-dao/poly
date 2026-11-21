@@ -72,7 +72,7 @@ export function CreditsBody() {
 
         <a
           href="/usage"
-          className="flex items-center gap-2 font-semibold text-primary text-sm hover:text-primary/80"
+          className="flex items-center gap-2 font-semibold text-primary text-sm hover:underline"
         >
           View Usage <ExternalLink size={16} />
         </a>

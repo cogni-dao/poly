@@ -61,10 +61,8 @@ export {
   SidebarInset,
   SidebarMenu,
   SidebarMenuAction,
-  SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
-  SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
@@ -109,7 +107,12 @@ export { Reveal } from "./kit/animation/Reveal";
 export { SignInDialog } from "./kit/auth/SignInDialog";
 export { WalletConnectButton } from "./kit/auth/WalletConnectButton";
 export * from "./kit/chat";
-export { Avatar, AvatarFallback, AvatarImage } from "./kit/data-display/Avatar";
+export {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+  ColorAvatarFallback,
+} from "./kit/data-display/Avatar";
 export { Badge } from "./kit/data-display/Badge";
 export { ExpandableTableRow } from "./kit/data-display/ExpandableTableRow";
 export { GithubButton } from "./kit/data-display/GithubButton";
@@ -167,6 +170,7 @@ export { PageSkeleton } from "./kit/layout/PageSkeleton";
 export { SectionCard } from "./kit/layout/SectionCard";
 export { MobileNav } from "./kit/navigation/MobileNav";
 export { NavigationLink } from "./kit/navigation/NavigationLink";
+export { SidebarMenuButton, SidebarMenuSubButton } from "./kit/navigation/SidebarButtons";
 export { UsdcPaymentFlow } from "./kit/payments/UsdcPaymentFlow";
 export { Hero } from "./kit/sections";
 export {

@@ -18,16 +18,17 @@ import {
   CollectTriggerCooldownResponseSchema,
   CollectTriggerResponseSchema,
 } from "@cogni/node-contracts";
+import { governanceScheduleId } from "@cogni/scheduling";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { getNodeId } from "@/shared/config";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const LEDGER_INGEST_SCHEDULE_ID = "governance:ledger_ingest";
 const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 export const POST = wrapRouteHandlerWithLogging(
@@ -37,16 +38,15 @@ export const POST = wrapRouteHandlerWithLogging(
   },
   async (ctx) => {
     const { scheduleControl } = getContainer();
+    const scheduleId = governanceScheduleId(getNodeId(), "LEDGER_INGEST");
 
     // Check schedule exists and enforce cooldown
-    const description = await scheduleControl.describeSchedule(
-      LEDGER_INGEST_SCHEDULE_ID
-    );
+    const description = await scheduleControl.describeSchedule(scheduleId);
     if (!description) {
       return NextResponse.json(
         {
           error:
-            "LEDGER_INGEST schedule not found. Governance schedules may not be synced.",
+            "LEDGER_INGEST schedule not found. Complete operator onboarding for this node.",
         },
         { status: 404 }
       );
@@ -68,18 +68,18 @@ export const POST = wrapRouteHandlerWithLogging(
       }
     }
 
-    await scheduleControl.triggerSchedule(LEDGER_INGEST_SCHEDULE_ID);
+    await scheduleControl.triggerSchedule(scheduleId);
 
     logEvent(ctx.log, EVENT_NAMES.LEDGER_COLLECT_TRIGGERED, {
       reqId: ctx.reqId,
       routeId: ctx.routeId,
-      scheduleId: LEDGER_INGEST_SCHEDULE_ID,
+      scheduleId,
     });
 
     return NextResponse.json(
       CollectTriggerResponseSchema.parse({
         triggered: true,
-        scheduleId: LEDGER_INGEST_SCHEDULE_ID,
+        scheduleId,
       }),
       { status: 200 }
     );
