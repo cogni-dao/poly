@@ -23,7 +23,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Avatar,
-  AvatarFallback,
+  ColorAvatarFallback,
   Button,
   DiscordIcon,
   EthereumIcon,
@@ -221,7 +221,7 @@ function ColorPickerSwatch({
   onSelect,
 }: {
   colors: readonly string[];
-  selected: string;
+  selected: string | null;
   onSelect: (color: string) => void;
 }): ReactElement {
   const [open, setOpen] = useState(false);
@@ -247,11 +247,11 @@ function ColorPickerSwatch({
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         className="size-8 cursor-pointer rounded-full outline outline-2 outline-ring outline-offset-2 transition-transform hover:scale-110"
-        style={{ backgroundColor: selected }}
+        style={{ backgroundColor: selected ?? "hsl(var(--primary))" }}
         aria-label="Change avatar color"
       />
       {open && (
-        <div className="absolute top-full right-0 z-50 mt-2 rounded-lg border border-border bg-popover p-3 shadow-md">
+        <div className="absolute top-full right-0 z-50 mt-2 w-max rounded-lg border border-border bg-popover p-3 shadow-md">
           <div className="grid grid-cols-6 gap-3">
             {colors.map((color) => (
               <button
@@ -517,7 +517,7 @@ export function ProfileView(): ReactElement {
   const searchParams = useSearchParams();
 
   const [profile, setProfile] = useState<ProfileData | null>(null);
-  const [selectedColor, setSelectedColor] = useState("#6366f1");
+  const [selectedColor, setSelectedColor] = useState<string | null>(null);
   const [configuredProviders, setConfiguredProviders] = useState<Set<string>>(
     new Set()
   );
@@ -603,7 +603,7 @@ export function ProfileView(): ReactElement {
       .then((data: ProfileData | null) => {
         if (data) {
           setProfile(data);
-          setSelectedColor(data.avatarColor ?? "#6366f1");
+          setSelectedColor(data.avatarColor);
         }
       })
       .catch(() => {
@@ -702,13 +702,10 @@ export function ProfileView(): ReactElement {
             Display Name
           </div>
           <div className="flex items-center gap-3">
-            <Avatar
-              className="size-8"
-              style={{ "--avatar-bg": selectedColor } as React.CSSProperties}
-            >
-              <AvatarFallback className="bg-[var(--avatar-bg)] font-semibold text-primary-foreground text-sm">
+            <Avatar className="size-8">
+              <ColorAvatarFallback color={selectedColor}>
                 {avatarLetter}
-              </AvatarFallback>
+              </ColorAvatarFallback>
             </Avatar>
             <span className="rounded-md border border-input bg-background px-3 py-1.5 text-foreground text-sm">
               {displayName}

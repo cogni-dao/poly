@@ -50,6 +50,20 @@ export const avatarFallback = cva(
   "flex size-full items-center justify-center rounded-full bg-muted"
 );
 
+/** Opaque avatar interaction and user-selected color presentation. */
+export const avatarTrigger = cva(
+  "flex items-center rounded-full outline-none transition-shadow hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:ring-2 data-[state=open]:ring-ring"
+);
+
+export const colorAvatarFallback = cva("font-semibold text-sm", {
+  variants: {
+    custom: {
+      true: "bg-[var(--avatar-bg)] text-[var(--avatar-fg)]",
+      false: "bg-primary text-primary-foreground",
+    },
+  },
+});
+
 const cardVariants = {
   default: "",
   elevated: "shadow-lg",
