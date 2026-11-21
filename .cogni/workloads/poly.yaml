@@ -17,6 +17,7 @@ metadata:
     # (https://docs.polymarket.com/api-reference/geoblock). Read by the operator at this source SHA.
     cogni.dev/placement-countries-production: "BG,CZ,FI,NL,PT,UA"
     cogni.dev/placement-countries-candidate-a: "FI,NL,PT,UA"
+    cogni.dev/placement-countries-preview: "FI,NL,PT,UA"
 containers:
   app:
     image: .
