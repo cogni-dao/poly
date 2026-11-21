@@ -65,7 +65,7 @@ export function UserAvatarMenu(): ReactElement | null {
       <DropdownMenuPrimitive.Trigger asChild>
         <AvatarTrigger type="button" aria-label="User menu">
           <Avatar className="size-8">
-            <ColorAvatarFallback color={user.avatarColor}>
+            <ColorAvatarFallback color={user.avatarColor ?? null}>
               {avatarLetter}
             </ColorAvatarFallback>
           </Avatar>
