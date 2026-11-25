@@ -156,6 +156,7 @@ import {
 	derivePrometheusQueryUrl,
 } from "@/bootstrap/capabilities/metrics";
 import { createRepoCapability } from "@/bootstrap/capabilities/repo";
+import { createSandboxShellCapability } from "@/bootstrap/capabilities/sandbox-workspace";
 import { createScheduleCapability } from "@/bootstrap/capabilities/schedule";
 import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
@@ -2631,6 +2632,7 @@ function createContainer(): Container {
 		metricsCapability,
 		webSearchCapability,
 		repoCapability,
+		sandboxShellCapability: createSandboxShellCapability(env),
 		scheduleCapability,
 		vcsCapability: stubVcsCapability,
 		workItemCapability,

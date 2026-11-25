@@ -3,24 +3,32 @@
 
 /**
  * Module: `@bootstrap/capabilities/sandbox-workspace`
- * Purpose: Factory for the remote sandbox workspace client from server environment.
- * Scope: Resolves sandbox origin + token. Does not implement transport or expose a model-facing tool.
+ * Purpose: Compose the sandbox shell capability (`core__sandbox_shell`) from server environment.
+ * Scope: Thin composition over `@cogni/sandbox`: env keys in, capability out, tick readings to the event registry.
+ *   Holds no transport or queue code.
  * Invariants:
  *   - NO_SECRETS_IN_CONTEXT: SANDBOX_EXECD_TOKEN resolved from env, never passed through tool params.
  *   - DERIVED_HOST: origin = SANDBOX_BASE_URL override, else derived from APP_BASE_URL + node slug.
- *   - UNCONFIGURED_IS_NULL: missing token or underivable origin returns null (feature off), never a guess.
- * Side-effects: none (factory only)
- * Links: src/adapters/server/sandbox-workspace/, services/sandbox/
+ *   - UNCONFIGURED_IS_NULL: missing token or underivable origin returns null (the tool answers `unavailable`), never a guess.
+ *   - RUN_FROM_THE_SCOPE: the run id comes from the execution scope the launcher binds, never from tool params.
+ * Side-effects: logs `adapter.sandbox.tick`
+ * Links: services/sandbox/
  * @internal
  */
 
+import type { SandboxShellCapability } from "@cogni/ai-tools";
 import {
+  createSandboxShellCapability as composeSandboxShellCapability,
   deriveIsolatedServiceOrigin,
-  ExecdSandboxClient,
   SANDBOX_SERVICE_NAME,
-} from "@/adapters/server/sandbox-workspace";
+} from "@cogni/sandbox";
+
+import { getExecutionScope } from "@/adapters/server";
 import { getNodeName } from "@/shared/config";
 import type { ServerEnv } from "@/shared/env";
+import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+
+const logger = makeLogger({ component: "SandboxShell" });
 
 /** Resolve the sandbox origin this node's app should call, or null when unknown. */
 export function resolveSandboxWorkspaceOrigin(
@@ -36,13 +44,33 @@ export function resolveSandboxWorkspaceOrigin(
   });
 }
 
-/** Create the sandbox client, or null when the token or origin is not configured. */
-export function createSandboxWorkspaceClient(
+/** Create the sandbox shell capability, or null when the token or origin is not configured. */
+export function createSandboxShellCapability(
   env: ServerEnv
-): ExecdSandboxClient | null {
+): SandboxShellCapability | null {
   const accessToken = env.SANDBOX_EXECD_TOKEN;
   if (!accessToken) return null;
   const baseUrl = resolveSandboxWorkspaceOrigin(env, getNodeName());
   if (!baseUrl) return null;
-  return new ExecdSandboxClient({ baseUrl, accessToken });
+  return composeSandboxShellCapability({
+    baseUrl,
+    accessToken,
+    runId: () => getExecutionScope().runId,
+    onTick: (report) => {
+      if ("errorCode" in report) {
+        logger.warn(
+          {
+            event: EVENT_NAMES.ADAPTER_SANDBOX_TICK,
+            error_code: report.errorCode,
+          },
+          EVENT_NAMES.ADAPTER_SANDBOX_TICK
+        );
+      } else {
+        logger.info(
+          { event: EVENT_NAMES.ADAPTER_SANDBOX_TICK, ...report },
+          EVENT_NAMES.ADAPTER_SANDBOX_TICK
+        );
+      }
+    },
+  });
 }

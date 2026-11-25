@@ -71,9 +71,13 @@ import {
   createKnowledgeSearchImplementation,
   createWorkItemQueryImplementation,
   createWorkItemReadImplementation,
+  createSandboxShellImplementation,
   createWorkItemTransitionImplementation,
   GOAL_LIST_NAME,
   getCurrentTimeImplementation,
+  SANDBOX_SHELL_NAME,
+  type SandboxShellCapability,
+  sandboxShellUnavailableImplementation,
   type WorkItemCapability,
 } from "@cogni/shared-ai-tools";
 
@@ -88,6 +92,8 @@ export interface ToolBindingDeps {
   readonly metricsCapability: MetricsCapability;
   readonly webSearchCapability: WebSearchCapability;
   readonly repoCapability: RepoCapability;
+  /** Null when no sandbox token or host is configured: the shell tool then answers `unavailable`. */
+  readonly sandboxShellCapability: SandboxShellCapability | null;
   readonly scheduleCapability: ScheduleCapability;
   readonly vcsCapability: VcsCapability;
   readonly workItemCapability: WorkItemCapability;
@@ -121,6 +127,14 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
     // Pure tools (no I/O dependencies)
     [GET_CURRENT_TIME_NAME]:
       getCurrentTimeImplementation as AnyToolImplementation,
+
+    // Sandbox shell (story.0064): real impl when a capability is injected,
+    // else the structured-unavailable binding (local dev / no execd token).
+    [SANDBOX_SHELL_NAME]: (deps.sandboxShellCapability
+      ? createSandboxShellImplementation({
+          sandboxShellCapability: deps.sandboxShellCapability,
+        })
+      : sandboxShellUnavailableImplementation) as AnyToolImplementation,
 
     [GOAL_LIST_NAME]: createGoalListImplementation({
       knowledgeCapability: deps.knowledgeCapability,
