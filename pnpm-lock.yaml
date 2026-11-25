@@ -189,14 +189,17 @@ importers:
         specifier: workspace:*
         version: link:../packages/scheduler-core
       '@cogni/scheduling':
-        specifier: https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz
-        version: '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi))'
+        specifier: https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz
+        version: '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi))'
       '@cogni/shared-ai-tools':
         specifier: https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.12.0/cogni-dao-ai-tools-0.12.0.tgz
         version: '@cogni-dao/ai-tools@https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.12.0/cogni-dao-ai-tools-0.12.0.tgz(@cogni-dao/knowledge-store@https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.21.0/cogni-dao-knowledge-store-0.21.0.tgz)(@cogni-dao/metrics@https://github.com/cogni-dao/node-template/releases/download/metrics-v0.19.0/cogni-dao-metrics-0.19.0.tgz(drizzle-orm@0.44.7(@opentelemetry/api@1.9.1)(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz)'
       '@cogni/substrate-health':
         specifier: https://github.com/cogni-dao/node-template/releases/download/substrate-health-v0.3.0/cogni-dao-substrate-health-0.3.0.tgz
         version: '@cogni-dao/substrate-health@https://github.com/cogni-dao/node-template/releases/download/substrate-health-v0.3.0/cogni-dao-substrate-health-0.3.0.tgz'
+      '@cogni/ui-theme':
+        specifier: https://github.com/cogni-dao/node-template/releases/download/ui-theme-v0.1.1/cogni-dao-ui-theme-0.1.1.tgz
+        version: '@cogni-dao/ui-theme@https://github.com/cogni-dao/node-template/releases/download/ui-theme-v0.1.1/cogni-dao-ui-theme-0.1.1.tgz'
       '@cogni/work-items':
         specifier: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz
         version: '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz'
@@ -1303,6 +1306,9 @@ importers:
       '@cogni/ids':
         specifier: workspace:*
         version: link:../ids
+      '@cogni/scheduling':
+        specifier: https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz
+        version: '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi))'
       type-fest:
         specifier: ^5.4.1
         version: 5.7.0
@@ -1597,9 +1603,9 @@ packages:
     version: 0.1.0
     hasBin: true
 
-  '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz':
-    resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz}
-    version: 0.1.0
+  '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz':
+    resolution: {integrity: sha512-KZHl+FkQ4NIFzsPERh5OOoFO8+kezLh/6oAi9ICtCO9FIh69fnkKv3fktKS6MveG2u9toWnuiHg7FuGsXWKOpw==, tarball: https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz}
+    version: 0.2.0
     peerDependencies:
       postgres: ^3.4.5
     peerDependenciesMeta:
@@ -1609,6 +1615,11 @@ packages:
   '@cogni-dao/substrate-health@https://github.com/cogni-dao/node-template/releases/download/substrate-health-v0.3.0/cogni-dao-substrate-health-0.3.0.tgz':
     resolution: {integrity: sha512-cRnzkeY22GRM42pAuvLMWlLf0U0m0uaLp/gjBk3DyFvJhywRmhQbYKp6hN2xGCPUUWf3dcbgK5zzHd/7+jzHww==, tarball: https://github.com/cogni-dao/node-template/releases/download/substrate-health-v0.3.0/cogni-dao-substrate-health-0.3.0.tgz}
     version: 0.3.0
+
+  '@cogni-dao/ui-theme@https://github.com/cogni-dao/node-template/releases/download/ui-theme-v0.1.1/cogni-dao-ui-theme-0.1.1.tgz':
+    resolution: {integrity: sha512-iHh1KXmkHBlzZFevgHr4sTnC6N0I3G58CB2jXLtqGZGonnoTm6Y9lmDsprgcOU6Srvn2M89dsihjIPOrcdGmXg==, tarball: https://github.com/cogni-dao/node-template/releases/download/ui-theme-v0.1.1/cogni-dao-ui-theme-0.1.1.tgz}
+    version: 0.1.1
+    hasBin: true
 
   '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.8/cogni-dao-work-items-0.1.8.tgz':
     resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.8/cogni-dao-work-items-0.1.8.tgz}
@@ -10348,13 +10359,15 @@ snapshots:
       yaml: 2.9.0
       zod: 3.25.76
 
-  '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi))':
+  '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.2.0/cogni-dao-scheduling-0.2.0.tgz(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi))':
     dependencies:
       zod: 4.4.3
     optionalDependencies:
       postgres: 3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)
 
   '@cogni-dao/substrate-health@https://github.com/cogni-dao/node-template/releases/download/substrate-health-v0.3.0/cogni-dao-substrate-health-0.3.0.tgz': {}
+  '@cogni-dao/ui-theme@https://github.com/cogni-dao/node-template/releases/download/ui-theme-v0.1.1/cogni-dao-ui-theme-0.1.1.tgz': {}
+
 
   '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.8/cogni-dao-work-items-0.1.8.tgz':
     dependencies:

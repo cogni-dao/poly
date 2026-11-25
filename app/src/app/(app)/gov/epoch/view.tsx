@@ -84,7 +84,7 @@ function StatusBadge({
       );
     default:
       return (
-        <Badge intent="default" size="sm" className="animate-pulse gap-1">
+        <Badge intent="default" size="sm" className="gap-1">
           <Clock className="h-3 w-3" />
           Active
         </Badge>

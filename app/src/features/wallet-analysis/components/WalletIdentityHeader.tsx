@@ -53,7 +53,7 @@ export function WalletIdentityHeader({
         )}
         {identity.isPrimaryTarget && (
           <Badge
-            intent="default"
+            intent="outline"
             size="sm"
             className="gap-1 bg-success/15 text-success"
           >

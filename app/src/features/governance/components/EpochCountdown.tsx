@@ -60,7 +60,7 @@ function StatusBadge({
   switch (status) {
     case "open":
       return (
-        <Badge intent="default" size="sm" className="animate-pulse">
+        <Badge intent="default" size="sm">
           ACTIVE
         </Badge>
       );

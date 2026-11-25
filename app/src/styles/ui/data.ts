@@ -50,6 +50,20 @@ export const avatarFallback = cva(
   "flex size-full items-center justify-center rounded-full bg-muted"
 );
 
+/** Opaque avatar interaction and user-selected color presentation. */
+export const avatarTrigger = cva(
+  "flex items-center rounded-full outline-none transition-shadow hover:ring-2 hover:ring-ring focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:ring-2 data-[state=open]:ring-ring"
+);
+
+export const colorAvatarFallback = cva("font-semibold text-sm", {
+  variants: {
+    custom: {
+      true: "bg-[var(--avatar-bg)] text-[var(--avatar-fg)]",
+      false: "bg-primary text-primary-foreground",
+    },
+  },
+});
+
 const cardVariants = {
   default: "",
   elevated: "shadow-lg",
@@ -88,11 +102,11 @@ export const cardFooter = cva("flex items-center p-8 pt-0");
 
 const badgeIntentVariants = {
   default:
-    "border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80",
+    "border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/90",
   secondary:
     "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
   destructive:
-    "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
+    "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/90",
   outline: "text-foreground",
 } as const;
 
@@ -128,25 +142,22 @@ const iconBoxSizeVariants = {
 } satisfies Record<SizeKey, string>;
 
 const iconBoxColorVariants = {
-  orange: "bg-warning",
-  blue: "bg-primary",
-  green: "bg-success",
-  red: "bg-danger",
+  orange: "bg-warning text-white dark:text-background",
+  blue: "bg-primary text-primary-foreground",
+  green: "bg-success text-white dark:text-background",
+  red: "bg-danger text-destructive-foreground",
 } as const;
 
 /**
  * Icon box styling for feature icons
  */
-export const iconBox = cva(
-  "flex items-center justify-center rounded-md text-white",
-  {
-    variants: {
-      size: iconBoxSizeVariants,
-      color: iconBoxColorVariants,
-    },
-    defaultVariants: { size: "md", color: "blue" },
-  }
-);
+export const iconBox = cva("flex items-center justify-center rounded-md", {
+  variants: {
+    size: iconBoxSizeVariants,
+    color: iconBoxColorVariants,
+  },
+  defaultVariants: { size: "md", color: "blue" },
+});
 
 /**
  * Stats display box for key metrics

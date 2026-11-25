@@ -38,7 +38,7 @@ jobs:
           # The classifier diffs a PR against its base, so it needs the merge base history.
           fetch-depth: 0
 
-      - uses: cogni-dao/node-template/.github/actions/node-ci@904e63d569ebb864f16dffd4b57fd6c406d55e00
+      - uses: cogni-dao/node-template/.github/actions/node-ci@88ae150e447016f1e0e5ae28cc470ac500e5aa87
         with:
           lane: static
           node_version: ${{ env.NODE_VERSION }}
