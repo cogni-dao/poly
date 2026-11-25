@@ -8,8 +8,9 @@
  *   account scope: "Read your account data").
  * Scope: Server-only. The door (`sameDoor` + an account param) has already decided owner | delegated | nothing; this reads under row-level security.
  * Invariants:
- *   - RLS_DECIDES_ROWS: the read runs in an app-role tenant transaction with `app.current_user_id` = the CALLER (the owner, or the agent), never the service
- *     role, so a delegated agent sees rows only through the delegated `agent_roles` read policies (migration 0094) and the door and the database cannot disagree.
+ *   - DOOR_DECIDES_THEN_OWNER_SCOPE: the route's door (`authorizeAccount` over `agent_roles`) has already answered owner | delegated | nothing. The read then runs
+ *     in an app-role tenant transaction scoped to the ACCOUNT OWNER (never the service role, never a caller-chosen id), as a payer-bound run does. There is no
+ *     delegated policy on billing_accounts or credit_ledger: billing_accounts sits under every owner subquery, so an extra qual there is costed into every tenant read.
  *   - ACCOUNT_404_NON_DISCLOSING: an account the database hides from the caller is `null`; the route answers one 404.
  * Side-effects: IO (RLS-scoped reads of billing_accounts and credit_ledger)
  * @public
@@ -23,13 +24,16 @@ import { getCreditsSummary } from "@/features/payments/services/creditsSummary";
 import { isBillingAccountNotFoundPortError } from "@/ports";
 
 export async function readAccountCredits(params: {
-  /** The caller's user id: the RLS actor. */
+  /** The caller's user id. The door has already decided this caller may read this account; it is not the RLS actor (the account owner is). */
   callerUserId: string;
   accountId: string;
   limit?: number | undefined;
 }): Promise<CreditsSummaryOutput | null> {
   try {
-    const summary = await getCreditsSummary(getContainer().accountsForUser(toUserId(params.callerUserId)), {
+    const container = getContainer();
+    const account = await container.serviceAccountService.getBillingAccountById(params.accountId);
+    if (!account) return null;
+    const summary = await getCreditsSummary(container.accountsForUser(toUserId(account.ownerUserId)), {
       billingAccountId: params.accountId,
       limit: params.limit,
     });

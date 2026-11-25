@@ -45,7 +45,6 @@ import {
   arrayOverlaps,
   eq,
   gt,
-  inArray,
   isNotNull,
   isNull,
   or,
@@ -69,6 +68,12 @@ export type AccountReadAccess = {
  * Deliberately NOT a general-purpose scope hierarchy: this is a rename
  * compatibility table that the contract-phase task deletes.
  */
+/**
+ * The one name an `agent_roles` account row carries (migration 0094 renames the legacy `performance:read` while copying). The delegated SELECT policies
+ * match this exact name, so the app check and RLS cannot disagree. Only an account-read requirement consults `agent_roles`.
+ */
+const ACCOUNT_READ_ROLE_SCOPE = "account:read";
+
 const SCOPE_ALIAS_SETS: readonly (readonly AgentCapabilityScope[])[] = [
   ["account:read", "performance:read"],
 ];
@@ -117,7 +122,12 @@ export async function authorize(
     return { accessKind: "owner", grantId: null };
   }
 
-  const [role] = await tx
+  const rolesApply = aliasesFor(input.requiredScope).includes(
+    ACCOUNT_READ_ROLE_SCOPE
+  );
+  const [role] = !rolesApply
+    ? []
+    : await tx
     .select({ id: agentRoles.id })
     .from(agentRoles)
     .where(
@@ -128,7 +138,7 @@ export async function authorize(
         isNotNull(agentRoles.approvedBy),
         isNull(agentRoles.revokedAt),
         or(isNull(agentRoles.expiresAt), gt(agentRoles.expiresAt, sql`now()`)),
-        inArray(agentRoles.scope, [...aliasesFor(input.requiredScope)])
+        eq(agentRoles.scope, ACCOUNT_READ_ROLE_SCOPE)
       )
     )
     .limit(1);
@@ -192,7 +202,9 @@ export async function resolveSubjectAccountId(
   tx: AgentGrantTransaction,
   input: { principalId: string; requiredScope: AgentCapabilityScope }
 ): Promise<SubjectAccountResolution> {
-  const roleRows = await tx
+  const roleRows = !aliasesFor(input.requiredScope).includes(ACCOUNT_READ_ROLE_SCOPE)
+    ? []
+    : await tx
     .select({ id: agentRoles.accountId })
     .from(agentRoles)
     .where(
@@ -202,7 +214,7 @@ export async function resolveSubjectAccountId(
         isNotNull(agentRoles.approvedBy),
         isNull(agentRoles.revokedAt),
         or(isNull(agentRoles.expiresAt), gt(agentRoles.expiresAt, sql`now()`)),
-        inArray(agentRoles.scope, [...aliasesFor(input.requiredScope)])
+        eq(agentRoles.scope, ACCOUNT_READ_ROLE_SCOPE)
       )
     );
   const granted = await tx

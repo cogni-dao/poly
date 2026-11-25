@@ -232,8 +232,6 @@ describe("position-gap runtime query plan proof", () => {
 						node["Relation Name"] === "poly_position_gap_actions",
 				),
 			).toBe(false);
-			if (latest["Execution Time"] >= 200 || actions["Execution Time"] >= 200)
-				console.error("PLANDEBUG", JSON.stringify({ lt: latest["Execution Time"], at: actions["Execution Time"], latest: latest.Plan, actions: actions.Plan }));
 			expect(latest["Execution Time"]).toBeLessThan(200);
 			expect(actions["Execution Time"]).toBeLessThan(200);
 		});

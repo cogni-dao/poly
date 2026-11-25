@@ -8,8 +8,8 @@
  * Scope: HTTP validation and the read. The door (`sameDoor` + `sameDoorAccountParam`) decides owner | delegated | nothing before this handler runs.
  * Invariants:
  *   - ACCOUNT_404_NON_DISCLOSING: a foreign, expired, revoked, wrong-scope or missing account is ONE answer: 404 `not_found`. An outage is 503.
- *   - RLS_DECIDES_ROWS: the read runs in an app-role tenant transaction with `app.current_user_id` = the CALLER (the owner, or the agent), never the service
- *     role. A delegated agent sees the rows only through the delegated `agent_roles` read policies (migration 0094), so the app door and the database cannot disagree.
+ *   - DOOR_DECIDES_THEN_OWNER_SCOPE: the door answers owner | delegated | nothing; the read then runs in an app-role tenant transaction scoped to the account
+ *     owner (never the service role). No delegated policy sits on billing_accounts or credit_ledger (see migration 0094).
  * Side-effects: IO (RLS-scoped read of billing_accounts and credit_ledger)
  * Links: packages/agent-grants (authorizeAccount), https://cognidao.org/knowledge/grant-account-outside-ai
  * @public
@@ -46,7 +46,7 @@ export const GET = wrapRouteHandlerWithLogging<Ctx>(
         : undefined,
     });
     if (!parsed.success) return json({ error: "Invalid query" }, 400);
-    // The caller is the RLS actor: an owner reads through the owner policy, an agent through the delegated agent_roles read policy.
+    // The door has decided; the facade reads in the account owner's scope.
     const summary = await readAccountCredits({ callerUserId: sessionUser.id, accountId, limit: parsed.data.limit });
     return summary ? json(creditsSummaryOperation.output.parse(summary)) : json({ error: "not_found" }, 404);
   }

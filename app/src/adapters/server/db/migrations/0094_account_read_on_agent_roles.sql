@@ -6,194 +6,180 @@
 -- WHY ADD-ONLY (precedent 0075): permissive policies combine with OR, so each new FOR SELECT policy widens reads to
 -- `owner OR legacy grant OR agent_roles row`. No existing policy body is rewritten, so writes stay owner-only and no table
 -- has a policy-less window. `agent_roles_account_self_read` (0092) lets the app role read exactly the connection user's own account rows,
--- which is all these subqueries need. The subquery is uncorrelated (like the owner branch), so the planner evaluates it once per statement and
--- keeps the bounded index plans proven by position-gap-runtime-query-plan.int.test.ts. Scope names match `aliasesFor('account:read')` in features/agent-grants/authorization.ts.
+-- which is all these subqueries need. COST, not correctness, shapes the form: the subquery is an uncorrelated scalar (an InitPlan), which the planner
+-- costs ONCE. An `IN (SELECT ...)` or a correlated EXISTS is costed per row; on the 100k-row position-gap tables that pushed the plan cost over
+-- jit_inline_above_cost (500000), so JIT inlining added ~2s to a 20ms index scan (position-gap-runtime-query-plan.int.test.ts). A scalar is exact here:
+-- one live row per (AI, scope) holds until the contract migration (task.5484), so an AI reads at most one account. Scope names match `aliasesFor('account:read')` in features/agent-grants/authorization.ts.
 
 DROP POLICY IF EXISTS "poly_copy_trade_fills_agent_roles_select" ON "poly_copy_trade_fills";--> statement-breakpoint
 CREATE POLICY "poly_copy_trade_fills_agent_roles_select" ON "poly_copy_trade_fills"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_copy_trade_decisions_agent_roles_select" ON "poly_copy_trade_decisions";--> statement-breakpoint
 CREATE POLICY "poly_copy_trade_decisions_agent_roles_select" ON "poly_copy_trade_decisions"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_copy_trade_targets_agent_roles_select" ON "poly_copy_trade_targets";--> statement-breakpoint
 CREATE POLICY "poly_copy_trade_targets_agent_roles_select" ON "poly_copy_trade_targets"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_wallet_connections_agent_roles_select" ON "poly_wallet_connections";--> statement-breakpoint
 CREATE POLICY "poly_wallet_connections_agent_roles_select" ON "poly_wallet_connections"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_wallet_balance_snapshots_agent_roles_select" ON "poly_wallet_balance_snapshots";--> statement-breakpoint
 CREATE POLICY "poly_wallet_balance_snapshots_agent_roles_select" ON "poly_wallet_balance_snapshots"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_wallet_grants_agent_roles_select" ON "poly_wallet_grants";--> statement-breakpoint
 CREATE POLICY "poly_wallet_grants_agent_roles_select" ON "poly_wallet_grants"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_position_gap_actions_agent_roles_select" ON "poly_position_gap_actions";--> statement-breakpoint
 CREATE POLICY "poly_position_gap_actions_agent_roles_select" ON "poly_position_gap_actions"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_position_gap_cohorts_agent_roles_select" ON "poly_position_gap_cohorts";--> statement-breakpoint
 CREATE POLICY "poly_position_gap_cohorts_agent_roles_select" ON "poly_position_gap_cohorts"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_position_gap_reservations_agent_roles_select" ON "poly_position_gap_reservations";--> statement-breakpoint
 CREATE POLICY "poly_position_gap_reservations_agent_roles_select" ON "poly_position_gap_reservations"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_position_gap_runs_agent_roles_select" ON "poly_position_gap_runs";--> statement-breakpoint
 CREATE POLICY "poly_position_gap_runs_agent_roles_select" ON "poly_position_gap_runs"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 DROP POLICY IF EXISTS "poly_algorithm_input_snapshots_agent_roles_select" ON "poly_algorithm_input_snapshots";--> statement-breakpoint
 CREATE POLICY "poly_algorithm_input_snapshots_agent_roles_select" ON "poly_algorithm_input_snapshots"
   AS PERMISSIVE FOR SELECT TO public
   USING (
-    "billing_account_id" IN (
+    "billing_account_id" = (
       SELECT role_row.account_id FROM agent_roles role_row
       WHERE role_row.resource = 'account'
         AND role_row.principal_user_id = current_setting('app.current_user_id', true)
         AND role_row.approved_by IS NOT NULL
         AND role_row.revoked_at IS NULL
         AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
+        AND role_row.scope = 'account:read'
+      LIMIT 1
     )
   );--> statement-breakpoint
 
--- Delegated read of ONE account and its ledger, for the gated credits route (GET /api/v1/accounts/{accountId}/credits, the route twin of `account:read`).
--- Same uncorrelated subquery as above, NOT a per-row function: billing_accounts sits under every owner subquery in this node's RLS policies, so a
--- per-row call here would run once per account row on every tenant read. The app role reads exactly its own account rows (`agent_roles_account_self_read`).
-GRANT SELECT ON "agent_roles" TO CURRENT_USER;--> statement-breakpoint
-DROP POLICY IF EXISTS "agent_delegated_read" ON "billing_accounts";--> statement-breakpoint
-CREATE POLICY "agent_delegated_read" ON "billing_accounts" AS PERMISSIVE FOR SELECT TO public
-  USING (
-    "id" IN (
-      SELECT role_row.account_id FROM agent_roles role_row
-      WHERE role_row.resource = 'account'
-        AND role_row.principal_user_id = current_setting('app.current_user_id', true)
-        AND role_row.approved_by IS NOT NULL
-        AND role_row.revoked_at IS NULL
-        AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
-    )
-  );--> statement-breakpoint
-DROP POLICY IF EXISTS "agent_delegated_read" ON "credit_ledger";--> statement-breakpoint
-CREATE POLICY "agent_delegated_read" ON "credit_ledger" AS PERMISSIVE FOR SELECT TO public
-  USING (
-    "billing_account_id" IN (
-      SELECT role_row.account_id FROM agent_roles role_row
-      WHERE role_row.resource = 'account'
-        AND role_row.principal_user_id = current_setting('app.current_user_id', true)
-        AND role_row.approved_by IS NOT NULL
-        AND role_row.revoked_at IS NULL
-        AND (role_row.expires_at IS NULL OR role_row.expires_at > now())
-        AND role_row.scope IN ('account:read','performance:read')
-    )
-  );--> statement-breakpoint
+-- The gated credits route (GET /api/v1/accounts/{accountId}/credits) adds NO policy on billing_accounts or credit_ledger: billing_accounts sits under
+-- every owner subquery in this node's RLS policies, so any extra qual there is costed into every tenant read. The door has already decided
+-- owner | delegated (authorizeAccount over agent_roles); the route then reads in the account owner's scope, as payer-bound runs do.
 
 -- Backfill (data only, idempotent). The migrating role sees no tenant under FORCE RLS, so lift FORCE for this step only
 -- (precedent 0037, 0044); it runs inside the migration transaction. One live row per (AI, scope) holds until the contract migration,

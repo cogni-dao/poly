@@ -56,7 +56,6 @@ import {
 } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { publicOrigin } from "@/app/_lib/public-origin";
 // Imported from the discovery module directly, not the feature barrel: this
 // public endpoint must stay a pure projection and never pull the executor (and
 // therefore a DB client) into its module graph.
