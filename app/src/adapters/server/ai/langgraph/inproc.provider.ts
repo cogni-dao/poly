@@ -430,7 +430,10 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
           continue;
         }
         runtimes[id] = runtime;
-        if (bound.contract.requires) requires[id] = bound.contract.requires;
+        // Published contracts carry `requires`; this node's local contract type does not declare it.
+        const required = (bound.contract as { readonly requires?: ToolRequires })
+          .requires;
+        if (required) requires[id] = required;
       }
       const guardScope = {
         runId,

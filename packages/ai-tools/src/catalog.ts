@@ -36,7 +36,6 @@ import { vcsMergePrBoundTool } from "./tools/vcs-merge-pr";
 import { webSearchBoundTool } from "./tools/web-search";
 import { workItemQueryBoundTool } from "./tools/work-item-query";
 import { workItemReadBoundTool } from "./tools/work-item-read";
-import { workItemTransitionBoundTool } from "./tools/work-item-transition";
 import type { BoundTool } from "./types";
 
 /**
@@ -126,7 +125,6 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   webSearchBoundTool as CatalogBoundTool,
   workItemQueryBoundTool as CatalogBoundTool,
   workItemReadBoundTool as CatalogBoundTool,
-  workItemTransitionBoundTool as CatalogBoundTool,
 ];
 
 /**

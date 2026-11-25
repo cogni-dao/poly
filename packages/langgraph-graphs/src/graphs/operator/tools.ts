@@ -18,17 +18,18 @@ import {
   METRICS_QUERY_NAME,
   SCHEDULE_LIST_NAME,
   WORK_ITEM_QUERY_NAME,
-  WORK_ITEM_TRANSITION_NAME,
+  WORK_ITEM_READ_NAME,
 } from "@cogni/ai-tools";
 
 /**
  * Tool IDs for Operating Review.
- * Read-mostly: query items, patch priority/labels, triage status transitions.
+ * Read-only on work items: query and read. The released ai-tools no longer ships core__work_item_transition, and poly
+ * offers no program the full-schema core__work_item_update until the program plumbing is ported.
  * Schedule read-only (no SCHEDULE_MANAGE — planner must not modify its own schedule).
  */
 export const OPERATING_REVIEW_TOOL_IDS = [
   WORK_ITEM_QUERY_NAME,
-  WORK_ITEM_TRANSITION_NAME,
+  WORK_ITEM_READ_NAME,
   GET_CURRENT_TIME_NAME,
   METRICS_QUERY_NAME,
   SCHEDULE_LIST_NAME,

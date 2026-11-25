@@ -62,7 +62,6 @@ import {
   WEB_SEARCH_NAME,
   WORK_ITEM_QUERY_NAME,
   WORK_ITEM_READ_NAME,
-  WORK_ITEM_TRANSITION_NAME,
 } from "@cogni/ai-tools";
 
 import {
@@ -72,7 +71,6 @@ import {
   createWorkItemQueryImplementation,
   createWorkItemReadImplementation,
   createSandboxShellImplementation,
-  createWorkItemTransitionImplementation,
   GOAL_LIST_NAME,
   getCurrentTimeImplementation,
   SANDBOX_SHELL_NAME,
@@ -225,8 +223,5 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
       nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,
 
-    [WORK_ITEM_TRANSITION_NAME]: createWorkItemTransitionImplementation({
-      workItemCapability: deps.workItemCapability,
-    }) as AnyToolImplementation,
   };
 }

@@ -177,6 +177,7 @@ async function launch(
     source as any,
     async () => null,
     [{ contract } as any],
+    undefined,
     { ...deps, sourceContext } as any,
   );
   return runInScope(scope, async () => {
@@ -673,6 +674,7 @@ describe("released preflight around eager shared provider", () => {
         source as any,
         async () => null,
         [{ contract } as any],
+        undefined,
         deps as any,
       );
       const eager = {

@@ -95,7 +95,6 @@ export type {
   WorkItemCapability,
   WorkItemInfo,
   WorkItemQueryParams,
-  WorkItemTransitionResult,
 } from "./work-item";
 
 import type { AuthCapability, ClockCapability } from "./types";

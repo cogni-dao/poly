@@ -9,7 +9,7 @@ import {
 } from "@cogni/shared-ai-tools";
 
 const baselineIds = new Set([
-  "core__goal_list", "core__work_item_query", "core__work_item_transition",
+  "core__goal_list", "core__work_item_query", "core__sandbox_shell",
   "core__knowledge_search", "core__edo_decide", "core__get_current_time",
 ]);
 const localById = new Map(CORE_TOOL_BUNDLE.map((tool) => [tool.contract.name, tool]));

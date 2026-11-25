@@ -56,6 +56,7 @@ import {
 	createKnowledgeCapability,
 	defaultCanMergeKnowledge,
 	type KnowledgeStorePort,
+	type NodeAdminAuthority,
 	shapeGate,
 } from "@cogni/knowledge-store";
 import {
@@ -300,6 +301,8 @@ export interface Container {
 	/** Tool source with real implementations for AI tool execution */
 	toolSource: ToolSourcePort;
 	sharedScheduleCapability: import("@cogni/ai-tools").ScheduleCapability;
+	/** This node's one node-admin authority (repo-spec admin wallets). */
+	nodeAdmin: NodeAdminAuthority;
 	/** AI-access composition only; existing legacy admin surfaces keep their guards. */
 	agentAuthority: ReturnType<typeof createSharedAgentAuthority>;
 	nodeAdminPort: NodeAdminPort;
@@ -2822,6 +2825,7 @@ function createContainer(): Container {
 		repoCapability,
 		toolSource,
 		sharedScheduleCapability: scheduleCapability,
+		nodeAdmin,
 		agentAuthority,
 		nodeAdminPort,
 		knowledgeContributionService,
