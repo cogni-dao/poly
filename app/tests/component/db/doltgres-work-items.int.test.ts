@@ -213,14 +213,14 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 
 		const created = await adapter.create(
 			{ id, type: "task", title: "Doltgres acceptance" },
-			{ actor: principalId },
+			principalId,
 		);
 		expect(created.id).toBe(id);
 		expect((await adapter.list({ ids: [id] })).items).toHaveLength(1);
 
 		const patched = await adapter.patch(
 			{ id, reason: "test change", set: { title: "Doltgres accepted" } },
-			{ actor: principalId },
+			principalId,
 		);
 		expect(patched.title).toBe("Doltgres accepted");
 
@@ -234,7 +234,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await blocker.unsafe("SELECT pg_advisory_lock(5001001)");
 			await expect(adapter.get(id)).resolves.toMatchObject({ id });
 			await expect(
-				adapter.patch({ id, reason: "test change", set: { title: "blocked" } }, { actor: principalId }),
+				adapter.patch({ id, reason: "test change", set: { title: "blocked" } }, principalId),
 			).rejects.toBeInstanceOf(WorkItemsBusyError);
 		} finally {
 			await blocker
@@ -270,7 +270,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			// standing in would now assert nothing.
 			const recoveryAttempt = adapter.patch(
 				{ id, reason: "test change", set: { title: "pool death" } },
-				{ actor: principalId },
+				principalId,
 			);
 			const destroyTimer = setTimeout(() => {
 				void oldPool.end({ timeout: 0 });
@@ -294,7 +294,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		// write plane (COMMAND_QUERY_SEPARATION); a read used to do it here only
 		// because a read used to take the write lock.
 		await expect(
-			adapter.patch({ id, reason: "test change", set: { title: "Doltgres accepted" } }, { actor: principalId }),
+			adapter.patch({ id, reason: "test change", set: { title: "Doltgres accepted" } }, principalId),
 		).resolves.toMatchObject({ id, title: "Doltgres accepted" });
 		const verifier = createWorkItemClient();
 		try {
@@ -389,7 +389,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 						reason: "test change",
 						set: { title: "must not land" },
 					},
-					{ actor: "component-agent" },
+					"component-agent",
 				),
 			).rejects.toThrow(/Work item not found/);
 			// Parked, never deleted: gone from the op namespace, present under
@@ -485,7 +485,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 
 			await adapter.create(
 				{ id, type: "task", title: "Scoped staging acceptance" },
-				{ actor: principalId },
+				principalId,
 			);
 			workItemCreated = true;
 
