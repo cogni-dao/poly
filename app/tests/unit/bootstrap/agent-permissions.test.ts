@@ -30,9 +30,13 @@ describe("Poly permission catalog", () => {
       "schedule:manage",
       "edo:write",
       "metric:compute",
+      "account:read",
     ])
       expect(catalog.declaredScopes).toContain(scope);
     expect(catalog.scopeKinds["sandbox:exec"]).toBe("node");
+    // Poly's delegated account read is askable at the one door and decided by the account owner, not on the admin page.
+    expect(catalog.scopeKinds["account:read"]).toBe("account");
+    expect(catalog.askableScopes).toContain("account:read");
   });
 
   it("shows node-ai one row per node scope its graph lists, Off until an admin turns it On", () => {

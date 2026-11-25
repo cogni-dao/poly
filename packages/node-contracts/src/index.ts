@@ -14,7 +14,12 @@
  */
 
 export * from "./agent.register.v1.contract";
+export * from "./agent.access-requests.v1.contract";
 export * from "./agent.roles.v1.contract";
+export * from "./agent.mine.v1.contract";
+export * from "./agent.credentials.v1.contract";
+export * from "./agent.service-enrollment.v1.contract";
+export * from "./payer-bindings.v1.contract";
 // ── AI contracts ────────────────────────────────────────────────────────────
 export * from "./ai.activity.v1.contract";
 export * from "./ai.agents.v1.contract";
@@ -110,3 +115,4 @@ export * from "./work.items.delete.v1.contract";
 export * from "./work.items.get.v1.contract";
 export * from "./work.items.list.v1.contract";
 export * from "./work.items.patch.v1.contract";
+export * from "./service-links.ask.v1.contract";

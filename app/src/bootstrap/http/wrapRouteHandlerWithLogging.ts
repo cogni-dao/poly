@@ -6,6 +6,8 @@
  * Purpose: Route wrapper to eliminate boilerplate for request logging envelope and metrics.
  * Scope: Bootstrap-layer utility. Handles ctx creation, timing, envelope logging, and Prometheus metrics. Does not implement route-specific business logic.
  * Invariants: Always logs request start/end exactly once; always measures duration; catches unhandled errors; always records metrics (even on 5xx).
+ *   The session is resolved inside the request lifecycle, so a credential-store outage (503), a rate-limited key (429) and a superseded signed key (401)
+ *   are logged, measured and traced like any other response.
  * Side-effects: IO (creates request context, emits structured log entries, records Prometheus metrics). Container loaded via dynamic import to avoid Turbopack per-route module duplication.
  * Notes: Use this wrapper for all instrumented routes. Domain events go in facades/features, not here.
  *        logRequestEnd runs exactly once in the finally block for all paths (success, 401, 5xx).
@@ -16,12 +18,24 @@
  * @public
  */
 
+import { bearerWriteRefusal } from "@cogni/agent-grants";
+import {
+  CredentialRateLimitedError,
+  CredentialStoreUnavailableError,
+  credentialDenialHttp,
+  credentialErrorHttp,
+  isRevocableKey,
+  storeFailureFields,
+  V1SupersededError,
+} from "@cogni/agent-grants/credentials";
 import type { SessionUser } from "@cogni/node-shared";
 import { type NextRequest, NextResponse } from "next/server";
 import type { Container } from "@/bootstrap/container";
+import { ServiceAuthUnavailableError } from "@/bootstrap/service-auth-error";
 import { withRootSpan } from "@/bootstrap/otel";
 import {
   createRequestContext,
+  EVENT_NAMES,
   httpRequestDurationMs,
   httpRequestsTotal,
   logRequestEnd,
@@ -31,6 +45,25 @@ import {
   type RequestContext,
   statusBucket,
 } from "@/shared/observability";
+
+/** One log line for a credential outcome that answers before the handler. Fields: routeId, plus userId (v1_superseded) or errorClass and sqlState (outage). Never a key, a hash or a message. */
+function logCredentialRefusal(log: RequestContext["log"], error: unknown, routeId: string): void {
+  if (error instanceof V1SupersededError) {
+    // A signed key used after its user confirmed a revocable key: the best "leaked signed key is being replayed" signal. userId only.
+    log.warn({ event: EVENT_NAMES.AGENT_CREDENTIAL_V1_SUPERSEDED_DENIED, routeId, userId: error.userId }, EVENT_NAMES.AGENT_CREDENTIAL_V1_SUPERSEDED_DENIED);
+  } else if (error instanceof CredentialRateLimitedError) {
+    log.warn({ event: EVENT_NAMES.AGENT_CREDENTIAL_RATE_LIMITED, routeId }, EVENT_NAMES.AGENT_CREDENTIAL_RATE_LIMITED);
+  } else if (error instanceof CredentialStoreUnavailableError) {
+    log.warn({ event: EVENT_NAMES.AGENT_CREDENTIAL_STORE_UNAVAILABLE, routeId, ...storeFailureFields(error) }, EVENT_NAMES.AGENT_CREDENTIAL_STORE_UNAVAILABLE);
+  }
+}
+
+/**
+ * DENY_BY_DEFAULT is wired but not yet enforced on this node: Poly's own bearer-reachable write routes (every `/api/v1/*` route accepts a bearer) have not been
+ * audited for a declared door, and cookie-only routes (`getServerSessionUser`) do not mark `via: "session"`. Turning this on before both are done would answer
+ * every undeclared write 403. The declared doors below (`sameDoor`, account doors) already run where a route declares them.
+ */
+const ENFORCE_BEARER_WRITE_DECLARATIONS = false;
 
 type AuthRequiredHandler<TContext = unknown> = (
   ctx: RequestContext,
@@ -48,6 +81,30 @@ type AuthOptionalHandler<TContext = unknown> = (
 
 type AuthRequiredOptions = {
   routeId: string;
+  /**
+   * SAME_DOOR: this route twins a guarded tool. Before the handler runs, the caller passes the same `authorize()` check as
+   * the tool guard: a bearer caller needs a live role row for the tool's scope (403 `policy_denied`, 503 `authz_unavailable`);
+   * a signed-in human passes the subject rules. Declared once in `SAME_DOOR_ROUTES` (`@cogni/agent-grants`).
+   */
+  sameDoor?: string;
+  /**
+   * DENY_BY_DEFAULT (bug.0045): the reason a bearer agent may write here with no grant. Only a route that touches nothing but the caller's own data
+   * (its own chat turn, its own threads, its own credential), or whose service runs the one admin check on the caller itself (knowledge merge and close), declares one. A write route that declares none of `sameDoor`, `bearerWrite` or an
+   * `OPEN_BY_DESIGN_ROUTES` entry answers a bearer 403 `bearer_write_undeclared`; a human session is never affected.
+   */
+  bearerWrite?: string;
+  /**
+   * An ACCOUNT door (task.5465): the name of the route param that carries the account id (`accountId`). The same-door check then decides this
+   * account: the owner by session, or a bearer agent with a live grant for exactly this account. Every deny except an outage is ONE 404
+   * (`not_found`), so a foreign, expired, revoked and missing account cannot be told apart (ACCOUNT_404_NON_DISCLOSING).
+   */
+  sameDoorAccountParam?: string;
+  /**
+   * An OPTIONAL account door for a route that reads the caller's own account by default (task.5465): the name of a QUERY parameter that may carry another
+   * account id. With the parameter present the same account door runs (the owner by session, or a bearer agent with a live `account:read` grant for exactly that
+   * account; every other answer is the one 404). Absent, the route reads the caller's own account as before and no door runs.
+   */
+  sameDoorAccountQuery?: string;
   auth: {
     mode: "required";
     getSessionUser: () => Promise<SessionUser | null>;
@@ -159,18 +216,28 @@ export function wrapRouteHandlerWithLogging<TContext = unknown>(
       );
     }
 
-    // Fetch session based on auth mode
-    const sessionUser =
-      options.auth && options.auth.mode !== "none"
-        ? await options.auth.getSessionUser()
-        : null;
-
     // Wrap entire request in OTel root span for distributed tracing
     // Per AI_SETUP_SPEC.md: root span bound to context via context.with()
     return withRootSpan(
       `${request.method} ${options.routeId}`,
       { route_id: options.routeId },
       async ({ traceId, span }) => {
+        const start = performance.now();
+
+        // Resolve the session INSIDE the span, so a credential outcome (401 v1_superseded, 429, 503) is logged, measured and traced like every
+        // other response. The error is held here and answered in the try below, where `finally` logs the request end and records the metric
+        // exactly once. A revocable key whose store cannot answer is 503, never a false 401 (STORE_OUTAGE_IS_NOT_401). The context is built once,
+        // after this, with the session, exactly as before (no logger `.child` is assumed beyond what `createRequestContext` already uses).
+        let sessionUser: SessionUser | null = null;
+        let sessionError: unknown;
+        if (options.auth && options.auth.mode !== "none") {
+          try {
+            sessionUser = await options.auth.getSessionUser();
+          } catch (error) {
+            sessionError = error;
+          }
+        }
+
         const ctx = createRequestContext(
           { baseLog: container.log, clock: container.clock },
           request,
@@ -185,21 +252,124 @@ export function wrapRouteHandlerWithLogging<TContext = unknown>(
         span.setAttribute("request_id", ctx.reqId);
 
         logRequestStart(ctx.log);
-        const start = performance.now();
 
         // Track response for metrics/logging (captured in try/catch, used in finally)
         let responseStatus = 500;
         let response: NextResponse;
 
         try {
+          if (sessionError !== undefined) {
+            // An unreachable home key set is 503, never 401 (the caller did nothing wrong).
+            const refusal =
+              sessionError instanceof ServiceAuthUnavailableError
+                ? credentialDenialHttp("unavailable")
+                : credentialErrorHttp(sessionError);
+            if (!refusal) throw sessionError;
+            logCredentialRefusal(ctx.log, sessionError, options.routeId);
+            responseStatus = refusal.status;
+            response = NextResponse.json(refusal.body, { status: refusal.status, headers: { ...refusal.headers } });
+            return response;
+          }
+
           // Check session requirement before calling handler
           if (options.auth?.mode === "required" && !sessionUser) {
             responseStatus = 401;
+            // A refused revocable key (unknown, revoked, expired, wrong state) is a credential denial; logged with routeId only.
+            if (isRevocableKey(request.headers.get("authorization")?.slice("Bearer ".length) ?? "")) {
+              ctx.log.warn(
+                { event: EVENT_NAMES.AGENT_CREDENTIAL_INVALID_DENIED, routeId: options.routeId },
+                EVENT_NAMES.AGENT_CREDENTIAL_INVALID_DENIED
+              );
+            }
             response = NextResponse.json(
               { error: "Session required" },
               { status: responseStatus }
             );
             return response;
+          }
+
+          const sameDoor = "sameDoor" in options ? options.sameDoor : undefined;
+          const pathAccountParam = "sameDoorAccountParam" in options ? options.sameDoorAccountParam : undefined;
+          const queryAccountParam = "sameDoorAccountQuery" in options ? options.sameDoorAccountQuery : undefined;
+          const queryAccountId = queryAccountParam ? new URL(request.url).searchParams.get(queryAccountParam) : null;
+          // An optional query door runs only when the caller names an account; otherwise the route's own-account read needs no door.
+          const accountParam = pathAccountParam ?? (queryAccountId !== null ? queryAccountParam : undefined);
+          // The door counts only when it will actually run for this request.
+          const doorRuns = Boolean(sameDoor) && (!queryAccountParam || Boolean(pathAccountParam) || queryAccountId !== null);
+          // FAIL_CLOSED: any signed-in identity not proven `via: "session"` is a bearer, for the gate and the door alike. Every resolver sets `via`
+          // (request-identity.ts for bearers and cookies, getServerSessionUser for cookie-only routes).
+          const via = sessionUser?.via === "session" ? "session" : "bearer";
+          // DENY_BY_DEFAULT (bug.0045): the decision is `bearerWriteRefusal` in @cogni-dao/agent-grants; the wrapper owns only the response and the log.
+          if (
+            ENFORCE_BEARER_WRITE_DECLARATIONS &&
+            sessionUser !== null &&
+            bearerWriteRefusal({
+              method: request.method,
+              via,
+              doorRuns,
+              bearerWrite: "bearerWrite" in options ? options.bearerWrite : undefined,
+              routeId: options.routeId,
+            })
+          ) {
+            ctx.log.warn(
+              {
+                event: EVENT_NAMES.AGENT_TOOL_AUTHZ,
+                principal: sessionUser.id,
+                subject: null,
+                payer: null,
+                tool: null,
+                decision: "deny",
+                code: "bearer_write_undeclared",
+                reason: "no_declaration",
+                runId: null,
+                route: options.routeId,
+                account: null,
+              },
+              EVENT_NAMES.AGENT_TOOL_AUTHZ
+            );
+            responseStatus = 403;
+            return NextResponse.json(
+              { error: "bearer_write_undeclared", code: "bearer_write_undeclared" },
+              { status: responseStatus, headers: { "cache-control": "no-store" } }
+            );
+          }
+          if (doorRuns && sameDoor && sessionUser) {
+            let accountId: string | undefined;
+            if (queryAccountParam && !pathAccountParam) accountId = queryAccountId ?? "";
+            else if (pathAccountParam) {
+              const params = (await (context as { params?: Promise<Record<string, string | string[] | undefined>> } | undefined)?.params) ?? {};
+              const raw = params[pathAccountParam];
+              accountId = typeof raw === "string" ? raw : undefined;
+            }
+            const decision = await container.agentAuthority.authorizeRoute({
+              toolId: sameDoor,
+              routeId: options.routeId,
+              userId: sessionUser.id,
+              via,
+              ...(accountParam ? { accountId: accountId ?? "" } : {}),
+            });
+            if (decision.decision === "deny") {
+              const unavailable = decision.code === "authz_unavailable";
+              // An account door answers every non-outage deny with the same 404.
+              responseStatus = unavailable ? 503 : accountParam ? 404 : 403;
+              // ROUTE_DENIAL_IS_ONE_TERMINAL_LINE: every route's door denial ends here with routeId and the decision code
+              // (policy_denied | authz_unavailable | ...), never the grant or role (task.0122). The route handler never runs.
+              ctx.log.warn(
+                {
+                  event: EVENT_NAMES.AGENT_ROUTE_DENIED,
+                  routeId: options.routeId,
+                  outcome: "refused",
+                  errorCode: decision.code,
+                  tool: sameDoor,
+                  status: responseStatus,
+                },
+                EVENT_NAMES.AGENT_ROUTE_DENIED
+              );
+              return NextResponse.json(
+                accountParam && !unavailable ? { error: "not_found" } : { error: decision.code, code: decision.code },
+                { status: responseStatus, headers: { "cache-control": "no-store" } }
+              );
+            }
           }
 
           // Safe cast: for mode "required", the guard above returns 401 if null.

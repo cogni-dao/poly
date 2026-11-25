@@ -75,15 +75,14 @@ routes direct adapter, persistence or feature-policy ownership.
   - `/api/v1/knowledge/domains/[domain]` [GET, PATCH, DELETE] - authenticated domain read/update/delete; baseline and nonempty deletion refused
   - `/api/v1/knowledge/index` [GET] - content-free knowledge routing projection with optional useWhen filter
   - `/api/v1/agent/register` [POST] - unauthenticated machine actor registration (returns Bearer API key)
-  - `/api/v1/agent/access-requests` [GET, POST] - bearer-only self lifecycle list/request for owner-approved performance access
-  - `/api/v1/agent/access-requests/[id]` [GET] - bearer-only self poll of request lifecycle
+  - `/api/v1/agent/access-requests` [GET, POST] - the one ask door (template task.5465: one grant row for node and account grants): an agent asks for a declared askable scope and gets a one-time approval link; an `account` scope is decided by the account owner on `/profile`, a node scope by a node admin on `/admin/ai-access`. Poly's `account:read` delegation is an `agent_roles` account row (migration 0094)
+  - `/api/v1/agent-access/mine` [GET, POST, DELETE] + `/preview` - the profile table: the signed-in person's own account rows (session only)
+  - `/api/v1/payer-bindings` [POST], `/payer-bindings/[id]` [DELETE], `/payer-bindings/[id]/decision` [POST] - a run is billed to another account only through a binding that account's owner approved
+  - `/api/v1/agent/credentials/{upgrade,rotate,confirm,revoke}` [POST] - revocable hashed agent keys (`@cogni/agent-grants/credentials`); `/api/v1/agent/me` [GET] - the caller's own identity
+  - `/api/v1/identity/wallet/{challenge,bind}` [POST] - any principal binds a wallet by SIWE (an agent may bind, never as a payee)
+  - `/api/v1/public/agent/service-enrollments` [POST], `/api/v1/service-links/ask` [POST], `/.well-known/jwks.json` [GET] - signed service assertions between nodes (no orgs: orgs are not part of this node)
   - `/api/v1/agent/runs` [GET] - machine-authenticated run list
   - `/api/v1/agent/runs/[runId]/stream` [GET] - machine-authenticated run stream SSE
-  - `/api/v1/poly/agent-grants` [GET, POST] - owner-managed principal capability grants
-  - `/api/v1/poly/agent-grants/[id]` [DELETE] - owner-only soft revocation
-  - `/api/v1/poly/agent-access-requests` [GET] - browser-owner access lifecycle list
-  - `/api/v1/poly/agent-access-requests/preview` [POST] - browser-owner approval-token preview
-  - `/api/v1/poly/agent-access-requests/[id]/decision` [POST] - browser-owner approve/deny
   - `/api/v1/poly/account/target-positions` [GET] - delegated, account-scoped saved target positions
   - `/api/v1/poly/research/target-positions` [GET] - owner-session saved target positions
   - `/api/v1/ai/runs/[runId]/ui-stream` [GET] - session-authenticated AI SDK chat replay stream

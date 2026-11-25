@@ -32,6 +32,7 @@ import {
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { routeAttribution } from "@/bootstrap/write-attribution";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -99,11 +100,13 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
     const { id } = await context.params;
+    const attribution = routeAttribution(sessionUser.id);
     // The package owns parse, refusals and the one terminal event (bug.0063); this route keeps auth, the actor and node errors.
     const result = await handleWorkItemPatch(id, {
       readJson: () => request.json(),
       parse: (body) => workItemsPatchOperation.input.safeParse(body),
-      write: (input) => patchWorkItem(input, { id: sessionUser.id }),
+      write: (input) => patchWorkItem(input, attribution),
+      attribution,
       toBody: (patched) => workItemsPatchOperation.output.parse(patched),
       mapNodeError: (e) => {
         if (e instanceof WorkItemNotFoundError)

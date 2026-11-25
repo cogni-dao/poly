@@ -13,15 +13,35 @@
  * @internal
  */
 
+import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
 import { scheduleListContract, scheduleManageContract } from "@cogni/shared-ai-tools";
 
 import type { PermissionBoundTool } from "../agent-permissions";
 import { POLY_CORE_TOOL_BUNDLE } from "./evaluation-baseline";
 import { PRINCIPAL_TOOL_BUNDLE } from "./principal-tool-source";
 
+/**
+ * Poly's delegated account read (`account:read`, kind account): an owner lets an outside AI read the trading data on their account. The
+ * graphs' local contract type cannot carry `requires`, so Poly declares it here, once, for its account-read tool. Poly's capability plane
+ * decides each read with `authorize()` over the same `agent_roles` account rows.
+ */
+const POLY_ACCOUNT_READ: PermissionBoundTool = {
+  contract: {
+    name: POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+    requires: {
+      scope: "account:read",
+      kind: "account",
+      subject: "member",
+      label: "Read your trading data",
+      description: "See your copy-trade orders, fills and portfolio.",
+    },
+  },
+};
+
 export const POLY_PERMISSION_TOOLS: readonly PermissionBoundTool[] = [
   ...POLY_CORE_TOOL_BUNDLE,
   ...PRINCIPAL_TOOL_BUNDLE,
   { contract: scheduleListContract },
   { contract: scheduleManageContract },
+  POLY_ACCOUNT_READ,
 ];

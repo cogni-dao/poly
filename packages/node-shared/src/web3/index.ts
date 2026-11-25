@@ -15,3 +15,4 @@ export * from "./block-explorer";
 export * from "./chain";
 export * from "./erc20-abi";
 export * from "./node-formation";
+export * from "./wallet-address";

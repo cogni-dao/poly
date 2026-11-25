@@ -135,3 +135,5 @@ export {
   thresholdCriterionSchema,
 } from "./schema.js";
 
+
+export { parseServiceLinksFile, type ServiceLinksSection } from "./service-links.js";

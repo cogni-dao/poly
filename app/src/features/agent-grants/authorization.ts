@@ -10,6 +10,9 @@
  * Scope: Read-only authorization seam. The caller must provide an app-role
  *   transaction whose tenant context is already set to the same principal.
  * Invariants:
+ *   - ONE_GRANT_ROW (story.0090): a delegated account read is a live `agent_roles` row with `resource = 'account'`, asked at
+ *     /api/v1/agent/access-requests and decided by the account owner on /profile. The legacy `agent_capability_grants` table is still
+ *     honored (expand phase; migration 0094 copies and revokes live account-read rows); the contract phase deletes it.
  *   - ONE_AUTHORIZE_FN: no other module may decide account read access. Swap
  *     the substrate (OpenFGA is a named future story) behind this function.
  *   - SCOPE_ALIAS_TOLERANCE: `account:read` is canonical; `performance:read`
@@ -31,9 +34,23 @@
  */
 
 import type { Database } from "@cogni/db-client";
-import { agentCapabilityGrants, billingAccounts } from "@cogni/db-schema";
+import {
+  agentCapabilityGrants,
+  agentRoles,
+  billingAccounts,
+} from "@cogni/db-schema";
 import type { AgentCapabilityScope } from "@cogni/poly-node-contracts";
-import { and, arrayOverlaps, eq, gt, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  arrayOverlaps,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 
 export type AgentGrantTransaction = Parameters<
   Parameters<Database["transaction"]>[0]
@@ -100,6 +117,23 @@ export async function authorize(
     return { accessKind: "owner", grantId: null };
   }
 
+  const [role] = await tx
+    .select({ id: agentRoles.id })
+    .from(agentRoles)
+    .where(
+      and(
+        eq(agentRoles.resource, "account"),
+        eq(agentRoles.accountId, input.accountId),
+        eq(agentRoles.principalUserId, input.principalId),
+        isNotNull(agentRoles.approvedBy),
+        isNull(agentRoles.revokedAt),
+        or(isNull(agentRoles.expiresAt), gt(agentRoles.expiresAt, sql`now()`)),
+        inArray(agentRoles.scope, [...aliasesFor(input.requiredScope)])
+      )
+    )
+    .limit(1);
+  if (role) return { accessKind: "delegated", grantId: role.id };
+
   const [grant] = await tx
     .select({ id: agentCapabilityGrants.id })
     .from(agentCapabilityGrants)
@@ -158,6 +192,19 @@ export async function resolveSubjectAccountId(
   tx: AgentGrantTransaction,
   input: { principalId: string; requiredScope: AgentCapabilityScope }
 ): Promise<SubjectAccountResolution> {
+  const roleRows = await tx
+    .select({ id: agentRoles.accountId })
+    .from(agentRoles)
+    .where(
+      and(
+        eq(agentRoles.resource, "account"),
+        eq(agentRoles.principalUserId, input.principalId),
+        isNotNull(agentRoles.approvedBy),
+        isNull(agentRoles.revokedAt),
+        or(isNull(agentRoles.expiresAt), gt(agentRoles.expiresAt, sql`now()`)),
+        inArray(agentRoles.scope, [...aliasesFor(input.requiredScope)])
+      )
+    );
   const granted = await tx
     .select({ id: agentCapabilityGrants.billingAccountId })
     .from(agentCapabilityGrants)
@@ -174,7 +221,11 @@ export async function resolveSubjectAccountId(
 
   const owned = await resolvePrincipalAccountId(tx, input.principalId);
   const candidates = [
-    ...new Set([...granted.map((row) => row.id), ...(owned ? [owned] : [])]),
+    ...new Set([
+      ...roleRows.flatMap((row) => (row.id ? [row.id] : [])),
+      ...granted.map((row) => row.id),
+      ...(owned ? [owned] : []),
+    ]),
   ];
 
   if (candidates.length === 1) {

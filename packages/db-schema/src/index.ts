@@ -14,6 +14,7 @@
 export * from "./ai";
 export * from "./ai-threads";
 export * from "./agent-access-requests";
+export * from "./agent-authority";
 export * from "./agent-capability-grants";
 export * from "./attribution";
 export * from "./auth";

@@ -16,8 +16,31 @@ export type RedeemAttestedBindingResult =
 	| "already_linked"
 	| "invalid_nonce";
 
+/** A wallet challenge is a short-lived SIWE nonce: long enough to sign on a phone, short enough to stay single-use. */
+export const WALLET_NONCE_TTL_MS = 10 * 60 * 1000;
+
+export type BindWalletResult =
+	| "created"
+	| "already_bound"
+	| "already_linked"
+	| "invalid_nonce";
+
 export interface IdentityBindingService {
 	createNonce(userId: string): Promise<string>;
+	/** A single-use SIWE nonce owned by this principal (a session user or an AI bearer key). */
+	createWalletNonce(
+		userId: string,
+	): Promise<{ nonce: string; expiresAt: Date }>;
+	/**
+	 * Bind a wallet whose signature the caller already verified (`address` is its lowercase wallet key). The nonce is consumed first, in the same transaction,
+	 * so a replayed signed message binds nothing. A wallet another principal holds is never re-pointed (NO_AUTO_MERGE).
+	 */
+	bindWallet(params: {
+		userId: string;
+		address: string;
+		nonce: string;
+		evidence: Record<string, unknown>;
+	}): Promise<BindWalletResult>;
 	redeemGithubBinding(params: {
 		userId: string;
 		nonce: string;
@@ -44,6 +67,46 @@ export function createIdentityBindingService(deps: {
 				expiresAt: new Date(now.getTime() + ATTESTATION_NONCE_TTL_MS),
 			});
 			return nonce;
+		},
+
+		async createWalletNonce(userId) {
+			// SIWE nonces are alphanumeric, so no dashes.
+			const nonce = deps.createNonceId().replaceAll("-", "");
+			const expiresAt = new Date(
+				new Date(deps.clock.now()).getTime() + WALLET_NONCE_TTL_MS,
+			);
+			await deps.repository.insertNonce({
+				nonce,
+				userId,
+				expiresAt,
+				provider: "wallet",
+			});
+			return { nonce, expiresAt };
+		},
+
+		async bindWallet(params) {
+			return deps.repository.transaction(async (tx) => {
+				const consumed = await tx.consumeNonce({
+					nonce: params.nonce,
+					userId: params.userId,
+					now: new Date(deps.clock.now()),
+					provider: "wallet",
+				});
+				if (!consumed) return "invalid_nonce";
+
+				const existing = await tx.findWalletBinding(params.address);
+				if (existing) {
+					return existing.userId === params.userId
+						? "already_bound"
+						: "already_linked";
+				}
+				const created = await tx.createWalletBinding({
+					userId: params.userId,
+					address: params.address,
+					evidence: params.evidence,
+				});
+				return created ? "created" : "already_linked";
+			});
 		},
 
 		async redeemGithubBinding(params) {

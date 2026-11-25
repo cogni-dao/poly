@@ -17,6 +17,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { SourceSystem } from "@cogni/ai-core";
+import type { WriteRunKind } from "@cogni/work-items";
 import type { BillingContext, LlmService } from "@/ports";
 
 /**
@@ -32,6 +33,8 @@ export interface ExecutionScope {
   /** Actor who initiated this run. Used by tools that need user-scoped operations (e.g., schedule CRUD). */
   readonly actorUserId?: string;
   readonly principalId?: string;
+  /** The run record's kind (`graph_runs.run_kind`), host-set when the record names one; absent: the write carries no `Run:` line (task.0133). */
+  readonly runKind?: WriteRunKind;
   readonly subjectUserId?: string;
   /** Chat-only temporary tech debt — browser disconnect, not durable cancellation. */
   readonly abortSignal?: AbortSignal;
@@ -39,6 +42,17 @@ export interface ExecutionScope {
   readonly llmService: LlmService;
   /** Billing source system for usage attribution (from ModelProviderPort.usageSource). */
   readonly usageSource: SourceSystem;
+}
+
+/**
+ * The actor of a write made inside a run: the run's own acting principal. Fails closed when the scope names none
+ * (never falls back to the subject: a run with no principal writes nothing).
+ */
+export function actingPrincipal(scope: ExecutionScope): string {
+  if (!scope.principalId) {
+    throw new Error("write denied: the run has no acting principal");
+  }
+  return scope.principalId;
 }
 
 const executionScopeStorage = new AsyncLocalStorage<ExecutionScope>();

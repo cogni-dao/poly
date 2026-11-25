@@ -45,6 +45,7 @@ import {
 } from "@/bootstrap/graph-executor.factory";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { executeStream } from "@/features/ai/public.server";
+import { payerScopeUserFor } from "@/app/_facades/ai/payer.server";
 import { commitUsageFact } from "@/features/ai/services/billing";
 import { preflightCreditCheck } from "@/features/ai/services/preflight-credit-check";
 import type { PreflightCreditCheckFn } from "@/ports";
@@ -696,7 +697,19 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       if (!stateKey) sessionId = `run:${runId}`;
     }
 
-    const accountService = container.accountsForUser(toUserId(actorUserId));
+    // A run billed to a bound account (story.0038) reads and charges it in the account owner's scope, only when the actor's live binding names it.
+    const accountService = container.accountsForUser(
+      toUserId(
+        await payerScopeUserFor(
+          {
+            payerFor: (id) => container.agentAuthority.payerFor(id),
+            getBillingAccountById: (id) =>
+              container.serviceAccountService.getBillingAccountById(id),
+          },
+          { actorUserId, billingAccountId },
+        ),
+      ),
+    );
 
     // Create preflight credit check closure
     // Per CREDITS_ENFORCED_AT_EXECUTION_PORT: decorator handles all execution paths

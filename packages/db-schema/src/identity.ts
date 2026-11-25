@@ -59,6 +59,10 @@ export const userBindings = pgTable(
 			table.externalId,
 		),
 		index("user_bindings_user_id_idx").on(table.userId),
+		// ONE_WALLET_ONE_KEY: a wallet is keyed by its lowercase address; two owners can never hold the same wallet in different casing.
+		uniqueIndex("user_bindings_wallet_lower_unique")
+			.on(table.provider, sql`lower(${table.externalId})`)
+			.where(sql`${table.provider} = 'wallet'`),
 	],
 ).enableRLS();
 
@@ -85,7 +89,7 @@ export const linkTransactions = pgTable(
 	(table) => [
 		check(
 			"link_transactions_provider_check",
-			sql`${table.provider} IN ('github', 'discord', 'google')`,
+			sql`${table.provider} IN ('github', 'discord', 'google', 'wallet')`,
 		),
 		index("link_transactions_user_id_idx").on(table.userId),
 		pgPolicy("tenant_isolation", {

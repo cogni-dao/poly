@@ -53,6 +53,7 @@ import {
 	type ContributionService,
 	createContributionService,
 	createEdoCapability,
+	type EdoCapability as EdoWriteCapability,
 	createKnowledgeCapability,
 	defaultCanMergeKnowledge,
 	type KnowledgeStorePort,
@@ -151,7 +152,17 @@ import {
 } from "@/bootstrap/agent-authority";
 import { POLY_PERMISSION_TOOLS } from "@/bootstrap/ai/permission-tools";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import {
+	bindEdoToolCapability,
+	runAttribution,
+} from "@/bootstrap/write-attribution";
 import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
+import { createServiceAuth, type ServiceAuth } from "@/bootstrap/service-auth";
+import {
+	createServiceLinks,
+	type ServiceLinks,
+} from "@/bootstrap/service-links";
+import { loadServiceLinksConfig } from "@/bootstrap/service-links-config";
 import { createNodeAdminPort } from "@/bootstrap/node-admin-port";
 import type { NodeAdminPort } from "@/ports/node-admin.port";
 import {
@@ -310,13 +321,17 @@ export interface Container {
 	nodeAdmin: NodeAdminAuthority;
 	/** AI-access composition only; existing legacy admin surfaces keep their guards. */
 	agentAuthority: AgentToolAuthority;
+	/** Service assertions (story.0038): the signer, the verifier over trusted homes and the org owner source. */
+	serviceAuth: ServiceAuth;
+	/** The nodes this node's AI may read from and ask (.cogni/service-links.yaml). */
+	serviceLinks: ServiceLinks;
 	nodeAdminPort: NodeAdminPort;
 	/** External-agent knowledge contribution service — undefined when DOLTGRES_URL is unset */
 	knowledgeContributionService: ContributionService | undefined;
 	/** Direct knowledge store port — exposed for the cookie-only browse endpoint. Undefined when DOLTGRES_URL is unset. */
 	knowledgeStorePort: KnowledgeStorePort | undefined;
 	/** EDO hypothesis-loop capability for the langgraph tool bindings AND the bearer-auth REST routes under /api/v1/edo. Always present (stubs throw when DOLTGRES_URL is unset). */
-	edoCapability: EdoCapability;
+	edoCapability: EdoWriteCapability;
 	/** Thread persistence scoped to a user (RLS enforced) */
 	threadPersistenceForUser(userId: UserId): ThreadPersistencePort;
 	/** Governance status queries (system tenant scope) */
@@ -2456,13 +2471,40 @@ function createContainer(): Container {
 
 	// Internal AI permissions (/admin/ai-access): repo-spec admin wallets are the one node-admin authority.
 	const nodeAdmin = createApproversNodeAdminAuthority();
+	// story.0038: the homes this node trusts and the nodes its AI calls are Git config (.cogni/service-links.yaml); none when the file or the key is missing.
+	const serviceLinksConfig = loadServiceLinksConfig({
+		environment: env.DEPLOY_ENVIRONMENT,
+		repoRoot: env.COGNI_REPO_ROOT,
+		log,
+	});
+	const agentSql = serviceDb.$client as unknown as AgentAuthoritySql;
+	const serviceAuth = createServiceAuth({
+		env,
+		trustedHomes: serviceLinksConfig.trustedHomes,
+		nodeId,
+		log,
+	});
+	const serviceLinks = createServiceLinks({
+		targets: serviceLinksConfig.targets,
+		signer: () => serviceAuth.getSigner(),
+		log,
+	});
 	const agentAuthority = createAgentToolAuthority({
 		// Service role: agent_roles / agent_principals are deny-all for the app role.
-		sql: serviceDb.$client as unknown as AgentAuthoritySql,
+		sql: agentSql,
 		nodeAdmin,
 		log,
 		toolBundle: POLY_PERMISSION_TOOLS,
 		principalCatalog: Object.values(SHARED_NODE_CATALOG),
+		// The owner join in an account decision needs the person's account to exist; it is created on their first decision.
+		ensureBillingAccount: async (userId) =>
+			(
+				await new UserDrizzleAccountService(
+					db,
+					toUserId(userId),
+					financialLedger,
+				).getOrCreateBillingAccountForUser({ userId })
+			).id,
 	});
 	const nodeAdminPort = createNodeAdminPort(agentAuthority);
 
@@ -2491,7 +2533,7 @@ function createContainer(): Container {
 	// KnowledgeCapability + EdoCapability for AI tools (require DOLTGRES_URL)
 	let goalMetrics: MetricService | undefined;
 	let knowledgeCapability: KnowledgeCapability;
-	let edoCapability: EdoCapability;
+	let edoCapability: EdoWriteCapability;
 	let knowledgeContributionService: ContributionService | undefined;
 	let knowledgeStorePort: KnowledgeStorePort | undefined;
 	// story.0033: the work-items `moves` ports over this node's metrics service.
@@ -2645,21 +2687,15 @@ function createContainer(): Container {
 		// task.0118: first page of an item's citation links, the same read the UI and the route use.
 		links: createCitationLinksPort(() => knowledgeStorePort),
 		log: (event) => log.warn(event, "work.items.envelope_degraded"),
-		backlogWriter: {
-			store: workItemAdapter,
-			principalId: () => {
-				const actor = getExecutionScope().actorUserId;
-				if (!actor) throw new Error("Authenticated work-item actor required");
-				return actor;
-			},
-		},
+		backlogWriter: { store: workItemAdapter, attribution: runAttribution },
 	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
+	const edoToolCapability = bindEdoToolCapability(edoCapability);
 	const toolBindings = createToolBindings({
 		nodePublicOrigin: env.APP_BASE_URL,
 		knowledgeCapability,
-		edoCapability,
+		edoCapability: edoToolCapability,
 		metricsCapability,
 		webSearchCapability,
 		repoCapability,
@@ -2832,6 +2868,8 @@ function createContainer(): Container {
 		sharedScheduleCapability: scheduleCapability,
 		nodeAdmin,
 		agentAuthority,
+		serviceAuth,
+		serviceLinks,
 		nodeAdminPort,
 		knowledgeContributionService,
 		knowledgeStorePort,

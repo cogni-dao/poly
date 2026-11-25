@@ -57,6 +57,9 @@ export const serverSchema = z.object({
   // Application environment (controls adapter wiring)
   APP_ENV: z.enum(["test", "production"]),
   APP_BASE_URL: z.string().url().optional(),
+  // Service assertions (story.0038): this node signs short-lived assertions as a home with an Ed25519 key derived from this 32-byte hex seed (the operator generates it).
+  // Optional: unset = no jwks route and no outbound signer. Trusted homes and link targets are Git config (.cogni/service-links.yaml).
+  SERVICE_ASSERTION_SIGNING_SEED: z.string().min(1).optional(),
   // Exact authenticated actors permitted to use shared Cogni coding.
   COGNI_CODING_ACTOR_IDS: z
     .string()

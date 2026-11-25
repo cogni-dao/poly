@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Owner-managed, expiring capability delegation between authenticated human and
+The one account-read authorization decision for owner-managed capability delegation between authenticated human and
 machine principals.
 
 ## Public Surface
@@ -16,13 +16,9 @@ machine principals.
 - `aliasesFor(scope)` — the expand-phase scope alias set.
 - `resolvePrincipalAccountId(tx, principalId)` — the account a principal owns,
   for descriptors declaring `accountFrom: "principal"`.
-- `listOwnedAgentGrants`, `replaceOwnedAgentGrant`, `revokeOwnedAgentGrant` —
-  owner lifecycle operations that run inside an app-role tenant transaction.
-- `createAgentAccessRequest`, `pollAgentAccessRequest`,
-  `listAgentAccessRequests` — bearer-agent self-only request lifecycle.
-- `previewAgentAccessRequest`, `decideAgentAccessRequest`,
-  `listOwnerAgentAccessRequests` — token-bound browser-owner approval and
-  lifecycle reads; grant creation commits in the same transaction as approval.
+- Asking and deciding moved to the one door (`/api/v1/agent/access-requests`, `/api/v1/agent-access/mine`, `@cogni/agent-grants`): a delegated
+  read is a live `agent_roles` account row. `authorize()` reads those rows first, then the legacy `agent_capability_grants` table (expand
+  phase; migration 0094 copies and revokes live legacy rows; the contract phase deletes the table).
 
 ## Invariants
 

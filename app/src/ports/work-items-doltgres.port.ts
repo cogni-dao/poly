@@ -22,6 +22,7 @@ import type {
   WorkItemWriterHealth,
   WorkQuery,
   WorkSummaryReadOptions,
+  WriteAttribution,
 } from "@cogni/work-items";
 
 export type WorkItemsCreateInput = Parameters<WorkItemCommandPort["create"]>[0];
@@ -68,8 +69,8 @@ export interface WorkItemsDoltgresPort {
     perColumn: number,
     options?: { readonly signal?: AbortSignal },
   ): Promise<WorkBoardColumnPages>;
-  create(input: WorkItemsCreateInput, principalId: string): Promise<WorkItem>;
-  patch(input: WorkItemsPatchInput, principalId: string): Promise<WorkItem>;
+  create(input: WorkItemsCreateInput, attribution: WriteAttribution): Promise<WorkItem>;
+  patch(input: WorkItemsPatchInput, attribution: WriteAttribution): Promise<WorkItem>;
   delete(id: WorkItemId, principalId: string): Promise<boolean>;
   /** Versions of one item, newest first, with their change reasons (task.0052). */
   history?(id: WorkItemId): Promise<HistoryEntry[]>;

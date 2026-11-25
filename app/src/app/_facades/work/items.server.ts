@@ -28,6 +28,7 @@ import type {
 	WorkItem,
 	WorkQuery,
 	WorkSummaryReadOptions,
+	WriteAttribution,
 } from "@cogni/work-items";
 import {
 	composeItemEnvelope,
@@ -350,14 +351,14 @@ export async function getWorkItem(
 
 export async function createWorkItem(
 	input: ContractCreateInput,
-	sessionUser: { id: string },
+	attribution: WriteAttribution,
 ): Promise<WorkItemDto> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.create(
 			// A null `scores` never reaches the store: it reads as absent.
 			toWorkItemsCreateInput({ ...input, scores: input.scores ?? undefined }),
-			sessionUser.id,
+			attribution,
 		);
 		return await withMoveReadings(toDto(item));
 	} catch (error) {
@@ -367,13 +368,13 @@ export async function createWorkItem(
 
 export async function patchWorkItem(
 	input: ContractPatchInput,
-	sessionUser: { id: string },
+	attribution: WriteAttribution,
 ): Promise<WorkItemDto> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.patch(
 			toWorkItemsPatchInput(input),
-			sessionUser.id,
+			attribution,
 		);
 		return await withMoveReadings(toDto(item));
 	} catch (error) {

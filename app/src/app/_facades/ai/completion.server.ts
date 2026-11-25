@@ -40,6 +40,7 @@ import type { AiEvent, StreamFinalResult } from "@/features/ai/public";
 // Import from public.server.ts - never from services/* directly (dep-cruiser enforced)
 import type { MessageDto } from "@/features/ai/public.server";
 import { getOrCreateBillingAccountForUser } from "@/lib/auth/mapping";
+import { selectRunPayer } from "./payer.server";
 import {
   isBillingAccountNotFoundPortError,
   isInsufficientCreditsPortError,
@@ -401,14 +402,23 @@ export async function completionStream(
   const { accountService } = resolveAiAdapterDeps(userId);
 
   const billingStartMs = performance.now();
-  const billingAccount = await getOrCreateBillingAccountForUser(
-    accountService,
+  const ownAccount = await getOrCreateBillingAccountForUser(accountService, {
+    userId: input.sessionUser.id,
+    ...(input.sessionUser.walletAddress
+      ? { walletAddress: input.sessionUser.walletAddress }
+      : {}),
+  });
+  // PAYER_IS_AUTHORIZED: a caller with a live payer binding is billed to the account its owner approved; everyone else to its own account.
+  const container = getContainer();
+  const billingAccount = await selectRunPayer(
     {
-      userId: input.sessionUser.id,
-      ...(input.sessionUser.walletAddress
-        ? { walletAddress: input.sessionUser.walletAddress }
-        : {}),
+      payerFor: (subjectUserId) =>
+        container.agentAuthority.payerFor(subjectUserId),
+      getBillingAccountById: (id) =>
+        container.serviceAccountService.getBillingAccountById(id),
+      log: container.log,
     },
+    { subjectUserId: input.sessionUser.id, own: ownAccount },
   );
   aiChatPhaseDurationMs.observe(
     { phase: "billing_resolve" },

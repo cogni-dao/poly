@@ -9,6 +9,7 @@ import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { resolveIdentityBindingDependencies } from "@/bootstrap/identity";
 import {
 	createIdentityBindingService,
+	type BindWalletResult,
 	type RedeemAttestedBindingResult,
 } from "@/features/identity/services/operator-attested-binding";
 import {
@@ -174,4 +175,21 @@ export async function resolveAttestedGithubUser(params: {
 		return { id: winner.userId, isNew: false };
 	}
 	return { id: userId, isNew: true };
+}
+
+/** A single-use SIWE nonce for the wallet bind flow, owned by the calling principal. */
+export function createWalletChallenge(
+	userId: string,
+): Promise<{ nonce: string; expiresAt: Date }> {
+	return service().createWalletNonce(userId);
+}
+
+/** Bind a wallet whose SIWE signature the route already verified; consumes the nonce first. */
+export function bindVerifiedWallet(params: {
+	userId: string;
+	address: string;
+	nonce: string;
+	evidence: Record<string, unknown>;
+}): Promise<BindWalletResult> {
+	return service().bindWallet(params);
 }

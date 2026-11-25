@@ -652,6 +652,20 @@
       "when": 1795634217700,
       "tag": "0092_agent_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1795637217700,
+      "tag": "0093_identity_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1795637218700,
+      "tag": "0094_account_read_on_agent_roles",
+      "breakpoints": true
     }
   ]
 }

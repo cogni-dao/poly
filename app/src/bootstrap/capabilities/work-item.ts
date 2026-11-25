@@ -27,6 +27,7 @@ import { WorkItemPatchConflictError } from "@cogni/shared-ai-tools";
 import type {
   ActorKind,
   WorkItem,
+  WriteAttribution,
   WorkItemCommandPort,
   WorkItemQueryPort,
   WorkItemStatus,
@@ -61,7 +62,8 @@ export interface WorkItemCapabilityDeps {
   readonly log?: ((event: EnvelopeDegradedEvent) => void) | undefined;
   readonly backlogWriter?: {
     readonly store: Pick<WorkItemsDoltgresPort, "patch">;
-    readonly principalId: () => string;
+    /** Built per call from the run scope (acting principal, requester, run); never at construction (task.0133). */
+    readonly attribution: () => WriteAttribution;
   };
 }
 
@@ -185,7 +187,7 @@ export function createWorkItemCapability(
               reason: input.reason,
               ...(input.cites !== undefined && { cites: input.cites }),
             },
-            writer.principalId(),
+            writer.attribution(),
           );
           return toWorkItemInfo(updated);
         } catch (error) {
