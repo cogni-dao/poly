@@ -688,6 +688,7 @@ describe("authenticated facade to guarded shared receiver", () => {
         } as any,
         async () => null,
         [{ contract }],
+        undefined,
         {
           resolvePrincipal: async () => "principal",
           guardDeps: {
