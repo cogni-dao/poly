@@ -4,11 +4,14 @@
 /**
  * Module: `@features/wallet-analysis/components/TraderPnlOverlayChart`
  * Purpose: Multi-series PnL trajectory overlay for the research viewport — same area-chart visual as `WalletProfitLossCard`, but plotting up to three traders on the same axes so RN1 / swisstony / your wallet can be compared at a glance.
- * Scope: Presentational. Receives the trader-comparison contract; toggles between "% of peak swing" (default) and "$ delta" modes.
+ * Scope: Presentational. Receives the trader-pnl contract (bug.5065 — separate from trader-comparison); toggles between "% of peak swing" (default) and "$ delta" modes.
  * Invariants:
  *   - PCT_NORMALIZED_PER_SERIES: in % mode each series is rebased to its own first point and scaled by its own max-magnitude swing, so wildly different wallet sizes share one axis without one dominating.
  *   - DOLLAR_IS_RAW_DELTA: $ mode plots `pnl[i] − pnl[0]` per series on a shared axis — small wallets will read flat against whales, by design.
  *   - SAFE_NORMALIZATION: zero-magnitude series degrade to 0 instead of NaN.
+ *   - PARTIAL_IS_RENDERED: traders with points are always plotted; a trader or series the server
+ *     flagged (no history / not observed / stale) is named in a note beside the chart rather than
+ *     collapsing the whole overlay to "unavailable".
  * Side-effects: none
  * @public
  */
@@ -16,8 +19,8 @@
 "use client";
 
 import type {
-  PolyResearchTraderComparisonResponse,
-  PolyResearchTraderComparisonTrader,
+  PolyResearchTraderPnlResponse,
+  PolyResearchTraderPnlTrader,
 } from "@cogni/poly-node-contracts";
 import { type ReactElement, useMemo, useState } from "react";
 import {
@@ -48,16 +51,20 @@ export function TraderPnlOverlayChart({
   isLoading,
   isError,
 }: {
-  data?: PolyResearchTraderComparisonResponse | undefined;
+  data?: PolyResearchTraderPnlResponse | undefined;
   isLoading?: boolean | undefined;
   isError?: boolean | undefined;
 }): ReactElement {
   const [mode, setMode] = useState<OverlayMode>("pct");
   const traders = data?.traders ?? [];
+  const plottedTraders = useMemo(
+    () => traders.filter((t) => t.pnl.history.length > 0),
+    [traders]
+  );
 
   const { rows, seriesKeys } = useMemo(
-    () => buildOverlayRows(traders),
-    [traders]
+    () => buildOverlayRows(plottedTraders),
+    [plottedTraders]
   );
   const config = useMemo(() => {
     const out: Record<string, { label: string; color: string }> = {};
@@ -80,18 +87,21 @@ export function TraderPnlOverlayChart({
       </p>
     );
   }
-  if (traders.length === 0 || rows.length === 0) {
+  if (plottedTraders.length === 0 || rows.length === 0) {
     return (
-      <p className="text-muted-foreground text-sm">
-        No P/L history available for the selected wallets.
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="text-muted-foreground text-sm">
+          No P/L history available for the selected wallets.
+        </p>
+        <TraderPnlPartialNote data={data} />
+      </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <TraderPnlSummary traders={traders} />
+        <TraderPnlSummary traders={plottedTraders} />
         <OverlayModeToggle mode={mode} onChange={setMode} />
       </div>
       <ChartContainer config={config} className="h-80 w-full">
@@ -198,8 +208,62 @@ export function TraderPnlOverlayChart({
           ))}
         </AreaChart>
       </ChartContainer>
+      <TraderPnlPartialNote data={data} />
     </div>
   );
+}
+
+/**
+ * Names every trader the server flagged (warning) or returned without points, so a partial
+ * overlay says which series is missing/stale and why instead of silently omitting it.
+ */
+function TraderPnlPartialNote({
+  data,
+}: {
+  data?: PolyResearchTraderPnlResponse | undefined;
+}): ReactElement | null {
+  const notes = partialNotes(data);
+  if (notes.length === 0) return null;
+  return (
+    <ul className="text-muted-foreground text-xs">
+      {notes.map((note) => (
+        <li key={note}>{note}</li>
+      ))}
+    </ul>
+  );
+}
+
+export function partialNotes(
+  data: PolyResearchTraderPnlResponse | undefined
+): string[] {
+  if (!data) return [];
+  const labelFor = (wallet: string | undefined): string =>
+    data.traders.find((t) => t.address === wallet)?.label ??
+    (wallet ? `${wallet.slice(0, 6)}…${wallet.slice(-4)}` : "A wallet");
+  const notes = data.warnings.map(
+    (w) => `${labelFor(w.wallet)}: ${describeWarning(w.code)}`
+  );
+  // A returned trader without points but without a warning is still named.
+  for (const trader of data.traders) {
+    const flagged = data.warnings.some((w) => w.wallet === trader.address);
+    if (trader.pnl.history.length === 0 && !flagged) {
+      notes.push(`${trader.label}: no P/L points in this interval`);
+    }
+  }
+  return notes;
+}
+
+function describeWarning(code: string): string {
+  switch (code) {
+    case "pnl_history_stale":
+      return "P/L is stale (observer behind) — showing last saved points";
+    case "pnl_history_not_recorded":
+      return "no saved P/L points in this interval";
+    case "wallet_not_observed":
+      return "not an observed wallet, no saved P/L yet";
+    default:
+      return "P/L partially unavailable";
+  }
 }
 
 type OverlayRow = {
@@ -208,7 +272,7 @@ type OverlayRow = {
 };
 
 function buildOverlayRows(
-  traders: readonly PolyResearchTraderComparisonTrader[]
+  traders: readonly PolyResearchTraderPnlTrader[]
 ): { rows: OverlayRow[]; seriesKeys: readonly string[] } {
   const seriesKeys = traders.map((t) => t.label);
   const tsSet = new Set<string>();
@@ -270,7 +334,7 @@ function OverlayModeToggle({
 function TraderPnlSummary({
   traders,
 }: {
-  traders: readonly PolyResearchTraderComparisonTrader[];
+  traders: readonly PolyResearchTraderPnlTrader[];
 }): ReactElement {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">

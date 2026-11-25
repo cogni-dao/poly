@@ -20,6 +20,7 @@ import type {
   Histogram,
   PolyResearchTargetOverlapResponse,
   PolyResearchTraderComparisonResponse,
+  PolyResearchTraderPnlResponse,
   PolyWalletOverviewInterval,
   WalletAnalysisDistributions,
 } from "@cogni/poly-node-contracts";
@@ -151,6 +152,9 @@ export function DistributionComparisonBlock({
   targetOverlapError,
   targetOverlapInterval,
   onTargetOverlapIntervalChange,
+  traderPnl,
+  traderPnlLoading,
+  traderPnlError,
   traderComparison,
   traderComparisonLoading,
   traderComparisonError,
@@ -165,6 +169,9 @@ export function DistributionComparisonBlock({
   targetOverlapError?: boolean | undefined;
   targetOverlapInterval: PolyWalletOverviewInterval;
   onTargetOverlapIntervalChange: (interval: PolyWalletOverviewInterval) => void;
+  traderPnl?: PolyResearchTraderPnlResponse | undefined;
+  traderPnlLoading?: boolean | undefined;
+  traderPnlError?: boolean | undefined;
   traderComparison?: PolyResearchTraderComparisonResponse | undefined;
   traderComparisonLoading?: boolean | undefined;
   traderComparisonError?: boolean | undefined;
@@ -252,9 +259,9 @@ export function DistributionComparisonBlock({
           ) : null}
           {isTraderPnlView ? (
             <TraderPnlOverlayChart
-              data={traderComparison}
-              isLoading={traderComparisonLoading}
-              isError={traderComparisonError}
+              data={traderPnl}
+              isLoading={traderPnlLoading}
+              isError={traderPnlError}
             />
           ) : null}
           {activeTraderView && !isTraderPnlView ? (

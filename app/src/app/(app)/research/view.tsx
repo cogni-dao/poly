@@ -40,6 +40,7 @@ import {
   PolyAddressSchema,
   type PolyResearchTargetOverlapResponse,
   type PolyResearchTraderComparisonResponse,
+  type PolyResearchTraderPnlResponse,
   type PolyWalletOverviewInterval,
   type PolyWalletStatusOutput,
   type WalletAnalysisDistributions,
@@ -151,6 +152,27 @@ async function fetchTraderComparison(params: {
     throw new Error(`trader comparison failed: ${res.status}`);
   }
   return (await res.json()) as PolyResearchTraderComparisonResponse;
+}
+
+async function fetchTraderPnl(params: {
+  wallets: readonly ResearchComparisonWallet[];
+  interval: PolyWalletOverviewInterval;
+}): Promise<PolyResearchTraderPnlResponse> {
+  const search = new URLSearchParams({ interval: params.interval });
+  for (const wallet of params.wallets.slice(0, 3)) {
+    search.append("wallet", wallet.address);
+    search.append("label", wallet.label);
+  }
+  const res = await fetch(
+    `/api/v1/poly/research/trader-pnl?${search.toString()}`,
+    {
+      credentials: "include",
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`trader pnl failed: ${res.status}`);
+  }
+  return (await res.json()) as PolyResearchTraderPnlResponse;
 }
 
 async function fetchTargetOverlap(
@@ -535,6 +557,7 @@ function ResearchBenchmarkBoard({
     [comparisonWallets]
   );
   const traderComparisonActive = isTraderComparisonView(activeResearchView);
+  const traderPnlActive = activeResearchView === "traderPnl";
   const distributionComparisonActive =
     isDistributionComparisonView(activeResearchView);
   const {
@@ -556,6 +579,28 @@ function ResearchBenchmarkBoard({
     staleTime: 30_000,
     gcTime: 5 * 60_000,
     retry: 1,
+  });
+  // bug.5065: the P/L overlay reads its own bounded series endpoint — independent of the
+  // fill-scanning comparison aggregate (and its per-wallet budget) the other trader views use.
+  const {
+    data: traderPnl,
+    isLoading: traderPnlLoading,
+    isError: traderPnlError,
+  } = useQuery({
+    queryKey: [
+      "research-trader-pnl",
+      pageInterval,
+      headlineWallets.map((wallet) => wallet.address).join(","),
+    ],
+    queryFn: () =>
+      fetchTraderPnl({
+        wallets: headlineWallets,
+        interval: pageInterval,
+      }),
+    enabled: traderPnlActive && headlineWallets.length > 0,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    retry: 2,
   });
   const overlapQuery = useQuery({
     queryKey: ["research-target-overlap", pageInterval],
@@ -606,6 +651,9 @@ function ResearchBenchmarkBoard({
           targetOverlapError={overlapQuery.isError}
           targetOverlapInterval={pageInterval}
           onTargetOverlapIntervalChange={setPageInterval}
+          traderPnl={traderPnl}
+          traderPnlLoading={traderPnlLoading}
+          traderPnlError={traderPnlError}
           traderComparison={traderComparison}
           traderComparisonLoading={traderComparisonLoading}
           traderComparisonError={traderComparisonError}
@@ -626,7 +674,6 @@ function ResearchBenchmarkBoard({
 
 function isTraderComparisonView(view: ResearchComparisonViewKey): boolean {
   return (
-    view === "traderPnl" ||
     view === "traderFills" ||
     view === "traderFlow" ||
     view === "traderSizePnl"
