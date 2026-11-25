@@ -22,6 +22,26 @@ import type { CompletionUnitAdapter } from "@/adapters/server/ai/langgraph/inpro
 import { LangGraphInProcProvider } from "@/adapters/server/ai/langgraph/inproc.provider";
 import type { GraphRunRequest } from "@/ports";
 
+// A plain ReAct harness graph with no tools: the base catalog now carries only the shared `cogni`
+// coordinator (program + principal), so provider wiring that needs neither runs on this entry.
+vi.mock("@cogni/langgraph-graphs", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@cogni/langgraph-graphs")>();
+  const { createPolyBrainGraph } = await import("@cogni/poly-graphs");
+  return {
+    ...actual,
+    LANGGRAPH_CATALOG: {
+      ...actual.LANGGRAPH_CATALOG,
+      "test-plain": {
+        displayName: "Test plain",
+        description: "plain harness graph without program or principal",
+        toolIds: [],
+        graphFactory: createPolyBrainGraph,
+      },
+    },
+  };
+});
+
 const TEST_SCOPE = {
   billing: {
     billingAccountId: "test-billing",
@@ -118,7 +138,7 @@ function createTestRequest(
     runId: "test-run-id",
     messages: [{ role: "user", content: "Hello" }],
     modelRef: { providerKey: "platform", modelId: "test-model" },
-    graphId: "langgraph:poet",
+    graphId: "langgraph:test-plain",
     ...overrides,
   };
 }
@@ -142,7 +162,7 @@ describe("LangGraphInProcProvider", () => {
           mockToolSource
         );
 
-        const request = createTestRequest({ graphId: "langgraph:poet" });
+        const request = createTestRequest({ graphId: "langgraph:test-plain" });
         const { stream, final } = provider.runGraph(request);
 
         const events = await collectEvents(stream);

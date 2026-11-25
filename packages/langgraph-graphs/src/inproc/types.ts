@@ -20,7 +20,7 @@ import type {
   ToolExecFn,
   ToolSpec,
 } from "@cogni/ai-core";
-import type { ToolContract } from "@cogni/ai-tools";
+import type { ToolContract } from "@cogni/poly-core-ai-tools";
 // Import shared graph types from graphs/types.ts (single source of truth)
 import type {
   CreateReactAgentGraphOptions,

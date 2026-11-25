@@ -554,7 +554,9 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
         createGraph: entry.graphFactory,
         completionFn: completion,
         createToolExecFn,
-        toolContracts: contracts,
+        // This node's local tool contracts are zod 3 typed; the released runner types them against its own
+        // ai-tools release. Same runtime shape (name, schemas, effect).
+        toolContracts: contracts as unknown as SharedRunnerOptions["toolContracts"],
         program: entry.program,
         trustedActorId: actor,
         trustedProgramId: entry.program,

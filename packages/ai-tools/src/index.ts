@@ -146,19 +146,6 @@ export {
   getCurrentTimeContract,
   getCurrentTimeImplementation,
 } from "./tools/get-current-time";
-// Names the released @cogni-dao/langgraph-graphs (>=0.11) imports from its @cogni/ai-tools peer; this package is
-// that peer, so it re-exports them from the same release.
-export {
-  ACCOUNT_CREDITS_READ_NAME,
-  GOAL_LIST_NAME,
-  METRIC_TOOL_BUNDLE,
-  TRIAGE_ROUTE_STAGES,
-  WORK_ITEM_ARTIFACT_RECORD_NAME,
-  WORK_ITEM_QUERY_MAX_LIMIT,
-  WORK_ITEM_UPDATE_NAME,
-  workItemArtifactRecordContract,
-  workItemUpdateContract,
-} from "@cogni/shared-ai-tools";
 // The sandbox shell tool is the released shared one; only its names, implementations and capability types are re-exported.
 export {
   createSandboxShellImplementation,

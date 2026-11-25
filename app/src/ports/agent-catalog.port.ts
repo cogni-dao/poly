@@ -26,7 +26,7 @@
  * - name (not displayName) matches LangGraph Server
  * - description is nullable (LangGraph Server allows null)
  *
- * graphId format is "${providerId}:${graphName}" (e.g., "langgraph:poet").
+ * graphId format is "${providerId}:${graphName}" (e.g., "langgraph:cogni").
  * For providerId='langgraph', the suffix after ':' maps to LangGraph Server graph_id.
  */
 export interface AgentDescriptor {
@@ -38,7 +38,7 @@ export interface AgentDescriptor {
   readonly agentId: string;
   /**
    * Internal graph reference for routing.
-   * Format: "${providerId}:${graphName}" (e.g., "langgraph:poet").
+   * Format: "${providerId}:${graphName}" (e.g., "langgraph:cogni").
    * For providerId='langgraph', suffix after ':' maps to LangGraph Server graph_id.
    */
   readonly graphId: string;

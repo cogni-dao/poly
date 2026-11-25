@@ -14,7 +14,7 @@
  * @public
  */
 
-import type { ToolContract } from "@cogni/ai-tools";
+import type { ToolContract } from "@cogni/poly-core-ai-tools";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import { makeLangChainTools } from "../core/langchain-tools";

@@ -28,14 +28,14 @@ Sandbox adapter for AI agent execution via **ephemeral** containers (`network=no
 
 ## Public Surface
 
-- **Exports:** `SandboxRunnerAdapter`, `SandboxRunnerAdapterOptions`, `LlmProxyManager`, `LlmProxyConfig`, `LlmProxyHandle`, `ProxyStopResult`, `SandboxGraphProvider`, `SANDBOX_PROVIDER_ID`, `SandboxAgentCatalogProvider`
+- **Exports:** `SandboxRunnerAdapter`, `SandboxRunnerAdapterOptions`, `LlmProxyManager`, `LlmProxyConfig`, `LlmProxyHandle`, `ProxyStopResult`, `SandboxGraphProvider`, `SANDBOX_PROVIDER_ID`
 - **Env/Config keys:** litellmMasterKey via constructor; image per-run via SandboxRunSpec
 - **Files considered API:** index.ts barrel export (not re-exported from parent server barrel — consumers use subpath imports to avoid Turbopack bundling dockerode native addon chain)
 
 ## Ports
 
 - **Uses ports:** none (SandboxGraphProvider uses SandboxRunnerPort internally)
-- **Implements ports:** `SandboxRunnerPort` (adapter), `GraphExecutorPort` (sandbox-graph.provider), `AgentCatalogProvider` (sandbox-agent-catalog.provider)
+- **Implements ports:** `SandboxRunnerPort` (adapter), `GraphExecutorPort` (sandbox-graph.provider); not listed in agent discovery
 - **Contracts:** tests/component/sandbox/, tests/stack/sandbox/
 
 ## Responsibilities

@@ -32,7 +32,7 @@ import {
  * Per LANGGRAPH_SERVER_ALIGNED: uses 'name' field.
  */
 export interface GraphOption {
-  /** Fully-qualified graph ID (e.g., "langgraph:poet") */
+  /** Fully-qualified graph ID (e.g., "langgraph:cogni") */
   readonly graphId: GraphId;
   /** Human-readable name (matches LangGraph Server 'name' field) */
   readonly name: string;

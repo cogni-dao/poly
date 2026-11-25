@@ -15,7 +15,6 @@
  */
 
 import { NextResponse } from "next/server";
-import { dispatchPrReview } from "@/app/_facades/review/dispatch.server";
 import { getContainer } from "@/bootstrap/container";
 import { dispatchSignalExecution } from "@/features/governance/services/signal-dispatch";
 import {
@@ -121,11 +120,6 @@ export async function POST(
 
     // 5. Fire-and-forget dispatches after successful verification.
     // Runs async — errors logged, never block webhook response.
-    if (source === "github" && eventType === "pull_request") {
-      const payload = JSON.parse(bodyBuffer.toString("utf-8"));
-      dispatchPrReview(payload, env, log);
-    }
-
     if (source === "alchemy") {
       const payload = JSON.parse(bodyBuffer.toString("utf-8"));
       dispatchSignalExecution(payload, env, log);
@@ -150,17 +144,12 @@ export async function POST(
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
 
-    // DB or other infra error — still dispatch review (signature was already verified
+    // DB or other infra error — still dispatch (signature was already verified
     // inside receiveWebhook before the DB insert that failed).
     log.error(
       { source, eventType, error: String(error) },
-      "webhook ingestion failed — dispatching review anyway"
+      "webhook ingestion failed — dispatching anyway"
     );
-
-    if (source === "github" && eventType === "pull_request") {
-      const payload = JSON.parse(bodyBuffer.toString("utf-8"));
-      dispatchPrReview(payload, env, log);
-    }
 
     if (source === "alchemy") {
       const payload = JSON.parse(bodyBuffer.toString("utf-8"));

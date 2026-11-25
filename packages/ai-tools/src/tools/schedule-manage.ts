@@ -39,7 +39,7 @@ export const ScheduleManageInputSchema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe("Graph ID (required for create, e.g., 'langgraph:research')"),
+    .describe("Graph ID (required for create, e.g., 'langgraph:work-prioritizer')"),
   scheduleId: z
     .string()
     .min(1)

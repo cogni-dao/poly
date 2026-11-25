@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 /** Delegate generic execution behavior; retain local product contract types and graph context. */
-import type { ToolContract } from "@cogni/ai-tools";
+import type { ToolContract } from "@cogni/poly-core-ai-tools";
 import {
   type ToLangChainToolsCapturedOptions as SharedCapturedOptions,
   type MakeLangChainToolOptions as SharedToolOptions,

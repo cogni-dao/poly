@@ -184,8 +184,8 @@ export const serverSchema = z.object({
   // Required when on-chain governance signal execution is enabled.
   ALCHEMY_WEBHOOK_SECRET: optionalString,
 
-  // GitHub Review App credentials - for PR review Check Runs + comments.
-  // Optional: PR review feature is disabled when not configured.
+  // GitHub App credentials - used by governance signal dispatch (Alchemy webhook).
+  // Optional: signal dispatch is skipped when not configured.
   // These are the same env vars used by scheduler-worker for ingestion.
   GH_REVIEW_APP_ID: optionalString,
   GH_REVIEW_APP_PRIVATE_KEY_BASE64: optionalString,

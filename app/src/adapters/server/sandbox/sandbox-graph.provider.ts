@@ -99,7 +99,7 @@ const SANDBOX_AGENTS: Record<string, SandboxAgentEntry> = {
  * GraphExecutorPort that executes agents in sandboxed Docker containers.
  *
  * Per SANDBOXED_AGENTS.md P0.75: integrates sandbox execution into the
- * standard chat pipeline so users can select "sandbox:agent" in the UI.
+ * standard chat pipeline so a caller can run "sandbox:agent" by graph id.
  *
  * Flow:
  * 1. Write messages to workspace as JSON

@@ -41,7 +41,8 @@
   },
   "dependencies": {
     "@cogni/ai-core": "workspace:*",
-    "@cogni/ai-tools": "workspace:*",
+    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.16.0/cogni-dao-ai-tools-0.16.0.tgz",
+    "@cogni/poly-core-ai-tools": "workspace:@cogni/ai-tools@*",
     "@langchain/core": "1.2.14",
     "@langchain/langgraph": "1.4.10",
     "@langchain/mcp-adapters": "^1.1.3",

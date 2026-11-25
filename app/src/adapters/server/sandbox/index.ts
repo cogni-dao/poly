@@ -17,7 +17,6 @@ export {
   LlmProxyManager,
   type ProxyStopResult,
 } from "./llm-proxy-manager";
-export { SandboxAgentCatalogProvider } from "./sandbox-agent-catalog.provider";
 export {
   SANDBOX_PROVIDER_ID,
   SandboxGraphProvider,

@@ -25,7 +25,6 @@ import {
   LangGraphDevAgentCatalogProvider,
   LangGraphInProcAgentCatalogProvider,
 } from "@/adapters/server";
-import { SandboxAgentCatalogProvider } from "@/adapters/server/sandbox/sandbox-agent-catalog.provider";
 import type { AgentDescriptor } from "@/ports";
 import { serverEnv } from "@/shared/env";
 
@@ -55,8 +54,8 @@ export function createAgentCatalog(): {
       // it, `langgraph:poly-brain` is runnable but invisible to /api/v1/ai/agents.
       [new LangGraphInProcAgentCatalogProvider(POLY_NODE_LANGGRAPH_CATALOG)];
 
-  // Sandbox agents always registered — LITELLM_MASTER_KEY enforced by assertRuntimeSecrets()
-  providers.push(new SandboxAgentCatalogProvider());
+  // The sandbox runtime stays executable by graph id but is not advertised (story.0028):
+  // pickers and schedules list only the published core programs.
 
   return new AggregatingAgentCatalog(providers);
 }

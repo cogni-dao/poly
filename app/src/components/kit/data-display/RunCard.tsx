@@ -78,7 +78,7 @@ const STATUS_CONFIG = {
 
 function formatGraphName(graphId: string | null): string {
   if (!graphId) return "Unknown Graph";
-  // "langgraph:poet" → "Poet", "inproc:chat" → "Chat"
+  // "langgraph:cogni" → "Cogni", "inproc:chat" → "Chat"
   const name = graphId.includes(":") ? graphId.split(":").pop() : graphId;
   if (!name) return graphId;
   return name.charAt(0).toUpperCase() + name.slice(1);

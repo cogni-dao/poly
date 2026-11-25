@@ -15,7 +15,7 @@
  */
 
 import type { AiEvent } from "@cogni/ai-core";
-import type { ToolContract } from "@cogni/ai-tools";
+import type { ToolContract } from "@cogni/poly-core-ai-tools";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";

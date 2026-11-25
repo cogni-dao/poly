@@ -73,7 +73,7 @@ pnpm test tests/component/ai/
 - Tool message format: liteLlmMessages includes tool_calls (assistant) and tool_call_id (tool role) for agentic loop
 - Discovery/Execution split: AgentCatalogProvider for discovery (no execution deps), GraphExecutorPort for execution
 - AgentCatalogProvider pattern: listAgents() returns AgentDescriptor[]; AggregatingAgentCatalog fans out to providers
-- GraphExecutorPort pattern: providerId prefixes graphId (e.g., "langgraph:poet"); NamespaceGraphRouter routes to registered providers
+- GraphExecutorPort pattern: providerId prefixes graphId (e.g., "langgraph:cogni"); NamespaceGraphRouter routes to registered providers
 - langgraph/ subdirectory: LangGraphInProcAgentCatalogProvider (discovery) and LangGraphInProcProvider (execution) wire @cogni/langgraph-graphs catalog. InProcProvider passes `responseFormat` through to graph factory and `structuredOutput` back to `GraphFinal`.
 - TavilyWebSearchAdapter: HARD_CAPS_ENFORCED_AT_TOOL_BOUNDARY — maxResults capped at 5, title≤120, snippet≤160 chars regardless of caller requests
 

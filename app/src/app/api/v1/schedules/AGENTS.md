@@ -59,7 +59,7 @@ REST API routes for schedule CRUD operations. Auth-protected endpoints for creat
 
 ```bash
 # Create schedule
-curl -X POST /api/v1/schedules -d '{"graphId":"langgraph:poet","cron":"0 9 * * *","timezone":"UTC","input":{}}'
+curl -X POST /api/v1/schedules -d '{"graphId":"langgraph:cogni","cron":"0 9 * * *","timezone":"UTC","input":{}}'
 
 # List schedules
 curl /api/v1/schedules
