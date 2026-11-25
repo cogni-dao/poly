@@ -91,11 +91,3 @@ export const agentRolesListOperation = {
     more: z.number().int().nonnegative(),
   }),
 } as const;
-
-/** `POST /api/v1/admin/ai-access/preview`: the waiting ask a one-time link token opens, as a table row. */
-export const agentPreviewOperation = {
-  id: "agent.preview.v1",
-  input: z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }),
-  /** A wrong-kind, used, expired or unknown token is one 404. */
-  output: z.object({ permission: agentAccessRowSchema }),
-} as const;

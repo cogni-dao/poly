@@ -76,6 +76,7 @@ routes direct adapter, persistence or feature-policy ownership.
   - `/api/v1/knowledge/index` [GET] - content-free knowledge routing projection with optional useWhen filter
   - `/api/v1/agent/register` [POST] - unauthenticated machine actor registration (returns Bearer API key)
   - `/api/v1/agent/access-requests` [GET, POST] - the one ask door (template task.5465: one grant row for node and account grants): an agent asks for a declared askable scope and gets a one-time approval link; an `account` scope is decided by the account owner on `/profile`, a node scope by a node admin on `/admin/ai-access`. Poly's `account:read` delegation is an `agent_roles` account row (migration 0094)
+  - `/api/v1/accounts/[accountId]/credits` [GET] - gated read of one account's credits: the same-door twin of `account:read` (owner by session, or an outside AI the owner turned On for exactly this account; every other answer is one 404)
   - `/api/v1/agent-access/mine` [GET, POST, DELETE] + `/preview` - the profile table: the signed-in person's own account rows (session only)
   - `/api/v1/payer-bindings` [POST], `/payer-bindings/[id]` [DELETE], `/payer-bindings/[id]/decision` [POST] - a run is billed to another account only through a binding that account's owner approved
   - `/api/v1/agent/credentials/{upgrade,rotate,confirm,revoke}` [POST] - revocable hashed agent keys (`@cogni/agent-grants/credentials`); `/api/v1/agent/me` [GET] - the caller's own identity
