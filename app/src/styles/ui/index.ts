@@ -22,6 +22,8 @@ export {
   avatar,
   avatarFallback,
   avatarImage,
+  avatarTrigger,
+  colorAvatarFallback,
   badge,
   card,
   cardContent,

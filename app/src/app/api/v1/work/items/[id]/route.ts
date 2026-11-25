@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoints for a single Dolt-backed work item.
  * Scope: Auth-protected GET, PATCH, and DELETE endpoints.
  * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH
- * Write errors (task.0097): `workItemWriteErrorResponse` from @cogni/work-items answers every write-contract error; this route keeps only auth, 403, 404 and backend-unavailable.
+ * Write errors (task.0097, bug.0063): the package route core `handleWorkItemPatch` answers every write-contract error and emits the one terminal work.items.patch_* event; this route keeps only auth, 403, 404 and backend-unavailable.
  * Reason + cites (task.0086): a missing or over-cap reason is HTTP400 `invalid input` with an issue at `reason`; an unknown cite id or a closed inbox is HTTP400 `cite_unresolved`; cites with no resolver wired is HTTP400 `cites_unsupported`; a resolver failure is HTTP503. Nothing is written in each case.
  * Moves (story.0033): `set.moves` with an unknown or deprecated metric id is HTTP400 `cite_unresolved` with an issue at `set.moves`; a bad list is HTTP400 `invalid input`; a non-empty list with no metric wiring is HTTP400 `moves_unsupported`; a resolver failure is HTTP503 `cite_resolver_unavailable`; a baseline failure is HTTP503 `metric_baseline_unavailable`. The client never sets a baseline: the server pins it.
  * Envelope (task.0118): GET returns each `moves` entry with its metric, KPI and goal; `?include=links` adds the first page of citation links (same read as /api/v1/citations/{id}); an unknown include is HTTP400.
@@ -20,7 +20,7 @@ import {
   workItemsGetOperation,
   workItemsPatchOperation,
 } from "@cogni/node-contracts";
-import { workItemWriteErrorResponse } from "@cogni/work-items";
+import { handleWorkItemPatch } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 import {
   deleteWorkItem,
@@ -99,60 +99,36 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
     const { id } = await context.params;
-
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-    }
-    if (
-      typeof body === "object" &&
-      body !== null &&
-      "id" in body &&
-      body.id !== undefined &&
-      body.id !== id
-    ) {
-      return NextResponse.json(
-        { error: "body id must match path id" },
-        { status: 400 }
-      );
-    }
-    const parsed = workItemsPatchOperation.input.safeParse({
-      ...(typeof body === "object" && body !== null ? body : {}),
-      id,
+    // The package owns parse, refusals and the one terminal event (bug.0063); this route keeps auth, the actor and node errors.
+    const result = await handleWorkItemPatch(id, {
+      readJson: () => request.json(),
+      parse: (body) => workItemsPatchOperation.input.safeParse(body),
+      write: (input) => patchWorkItem(input, { id: sessionUser.id }),
+      toBody: (patched) => workItemsPatchOperation.output.parse(patched),
+      mapNodeError: (e) => {
+        if (e instanceof WorkItemNotFoundError)
+          return {
+            status: 404,
+            errorCode: "not_found",
+            body: { error: e.message },
+          };
+        if (e instanceof WorkItemForbiddenError)
+          return {
+            status: 403,
+            errorCode: "forbidden",
+            body: { error: e.message },
+          };
+        if (e instanceof WorkItemsBackendNotReadyError)
+          return {
+            status: 503,
+            errorCode: "backend_unavailable",
+            body: { error: e.message },
+          };
+        return undefined;
+      },
     });
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        { status: 400 }
-      );
-    }
-
-    try {
-      const patched = await patchWorkItem(parsed.data, {
-        id: sessionUser.id,
-      });
-      ctx.log.info({ workItemId: id, citeCount: parsed.data.cites?.length ?? 0 }, "work.items.patch_success");
-      return NextResponse.json(workItemsPatchOperation.output.parse(patched));
-    } catch (error) {
-      // The package owns every write-contract answer (scores, reason, cites, moves, revision
-      // conflict, write outcome unknown, resolver and baseline failures) and matches by name.
-      const mapped = workItemWriteErrorResponse(error, "patch");
-      if (mapped) {
-        return NextResponse.json(mapped.body, { status: mapped.status });
-      }
-      if (error instanceof WorkItemNotFoundError) {
-        return NextResponse.json({ error: error.message }, { status: 404 });
-      }
-      if (error instanceof WorkItemForbiddenError) {
-        return NextResponse.json({ error: error.message }, { status: 403 });
-      }
-      if (error instanceof WorkItemsBackendNotReadyError) {
-        return NextResponse.json({ error: error.message }, { status: 503 });
-      }
-      throw error;
-    }
+    ctx.log.info(result.event, result.event.event);
+    return NextResponse.json(result.body, { status: result.status });
   }
 );
 

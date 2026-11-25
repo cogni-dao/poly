@@ -37,6 +37,11 @@ export const EVENT_NAMES = {
 	WORK_ITEMS_HISTORY_READ: "work.items.history_read",
 	// Bounded work reads (task.0056): one terminal event per /work/summaries or /work/board request.
 	WORK_ITEMS_LIST_COMPLETE: "work.items.list_complete",
+	// bug.0063: the package route core emits these; the names repeat WORK_ITEM_WRITE_EVENTS.
+	WORK_ITEMS_CREATE_SUCCESS: "work.items.create_success",
+	WORK_ITEMS_CREATE_REFUSED: "work.items.create_refused",
+	WORK_ITEMS_PATCH_SUCCESS: "work.items.patch_success",
+	WORK_ITEMS_PATCH_REFUSED: "work.items.patch_refused",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,

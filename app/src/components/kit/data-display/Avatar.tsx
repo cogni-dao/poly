@@ -18,7 +18,13 @@ import { cn } from "@cogni/node-ui-kit/util/cn";
 import * as AvatarPrimitive from "@radix-ui/react-avatar";
 import type { VariantProps } from "class-variance-authority";
 import * as React from "react";
-import { avatar, avatarFallback, avatarImage } from "@/styles/ui";
+import {
+  avatar,
+  avatarFallback,
+  avatarImage,
+  avatarTrigger,
+  colorAvatarFallback,
+} from "@/styles/ui";
 
 export interface AvatarProps
   extends Omit<
@@ -77,3 +83,50 @@ export const AvatarFallback = React.forwardRef<
   />
 ));
 AvatarFallback.displayName = "AvatarFallback";
+
+export const AvatarTrigger = React.forwardRef<
+  HTMLButtonElement,
+  React.ComponentPropsWithoutRef<"button">
+>(({ className, ...props }, ref) => (
+  <button ref={ref} className={cn(avatarTrigger(), className)} {...props} />
+));
+AvatarTrigger.displayName = "AvatarTrigger";
+
+export const ColorAvatarFallback = React.forwardRef<
+  React.ElementRef<typeof AvatarPrimitive.Fallback>,
+  Omit<
+    React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Fallback>,
+    "color"
+  > & {
+    color?: string | null;
+  }
+>(({ color, className, style, ...props }, ref) => {
+  const hex = color?.match(/^#([0-9a-f]{6})$/i)?.[1];
+  const channel = (valueHex: string, offset: number) => {
+    const value = Number.parseInt(valueHex.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = hex
+    ? 0.2126 * channel(hex, 0) +
+      0.7152 * channel(hex, 2) +
+      0.0722 * channel(hex, 4)
+    : 0;
+  return (
+    <AvatarFallback
+      ref={ref}
+      className={cn(colorAvatarFallback({ custom: !!hex }), className)}
+      style={
+        hex
+          ? ({
+              ...style,
+              "--avatar-bg": color,
+              "--avatar-fg":
+                luminance > Math.sqrt(0.0525) - 0.05 ? "#000000" : "#ffffff",
+            } as React.CSSProperties)
+          : style
+      }
+      {...props}
+    />
+  );
+});
+ColorAvatarFallback.displayName = "ColorAvatarFallback";
