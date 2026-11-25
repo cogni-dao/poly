@@ -73,7 +73,7 @@ export async function requireAdminSession(
       return refuse("authz_denied", 403, actorUserId, "origin_refused");
     }
     const container = getContainer();
-    const allowed = await container.agentAuthority.guardDeps.adminCheck(
+    const allowed = await container.agentAuthority.adminCheck(
       user.id,
     );
     if (allowed === "unavailable")

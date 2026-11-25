@@ -127,74 +127,7 @@ function logPerimeterDenial(
 	}
 }
 
-/** Only declared operations on this exact endpoint get a permission terminal event. */
-function permissionOperation(req: NextRequest): "list" | "on" | "off" | null {
-	if (req.nextUrl.pathname !== "/api/v1/admin/ai-access") return null;
-	switch (req.method) {
-		case "GET":
-			return "list";
-		case "POST":
-			return "on";
-		case "DELETE":
-			return "off";
-		default:
-			return null;
-	}
-}
-
-function permissionRefusal(
-	operation: "list" | "on" | "off",
-	method: string,
-	reason: PerimeterDenyReason | "auth_resolution_unavailable",
-	status: 401 | 503,
-	started: number,
-): NextResponse {
-	const reqId = randomUUID();
-	const response = NextResponse.json(
-		{ error: status === 401 ? "Unauthorized" : "authz_unavailable" },
-		{ status, headers: { "x-request-id": reqId, "cache-control": "no-store" } },
-	);
-	try {
-		// App-local registry: use the same guarded direct logger as the generic denial.
-		perimeterLog().info(
-			{
-				event: EVENT_NAMES.AI_PERMISSION_COMPLETE,
-				reqId,
-				routeId: "admin.ai-access",
-				method,
-				actorUserId: null,
-				operation,
-				principalSlug: "node-ai",
-				scope: "sandbox:exec",
-				resource: "node",
-				status,
-				outcome: status === 401 ? "denied" : "unavailable",
-				errorCode: status === 401 ? "unauthorized" : "authz_unavailable",
-				reason,
-				durationMs: Math.max(0, performance.now() - started),
-			},
-			EVENT_NAMES.AI_PERMISSION_COMPLETE,
-		);
-	} catch {
-		// Logging failure must never weaken or break the refusal.
-	}
-	return response;
-}
-
-function denyAtPerimeter(
-	req: NextRequest,
-	reason: PerimeterDenyReason,
-	started: number,
-): NextResponse {
-	const operation = permissionOperation(req);
-	if (operation)
-		return permissionRefusal(operation, req.method, reason, 401, started);
-	logPerimeterDenial(req, reason);
-	return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-}
-
 export async function proxy(req: NextRequest): Promise<NextResponse> {
-	const started = performance.now();
 	const { pathname } = req.nextUrl;
 	const isPublicApi = isPublicApiRoute(pathname);
 	const isAgentBearerRequest = isAgentApiRoute(pathname) && hasAgentBearer(req);
@@ -217,26 +150,14 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 		pathname.startsWith("/api/v1/") &&
 		!isAgentBearerRequest
 	) {
-		return denyAtPerimeter(req, "no_auth_secret", started);
+		logPerimeterDenial(req, "no_auth_secret");
+		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 
-	let token: Awaited<ReturnType<typeof getToken>> = null;
-	try {
-		token =
-			tokenSecret && needsAuth
-				? await getToken({ req, secret: tokenSecret })
-				: null;
-	} catch (error) {
-		const operation = permissionOperation(req);
-		if (!operation) throw error;
-		return permissionRefusal(
-			operation,
-			req.method,
-			"auth_resolution_unavailable",
-			503,
-			started,
-		);
-	}
+	const token =
+		tokenSecret && needsAuth
+			? await getToken({ req, secret: tokenSecret })
+			: null;
 
 	const isLoggedIn = !!token;
 
@@ -264,7 +185,8 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 			return NextResponse.next();
 		}
 		if (!isLoggedIn) {
-			return denyAtPerimeter(req, "no_session", started);
+			logPerimeterDenial(req, "no_session");
+			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 		}
 	}
 

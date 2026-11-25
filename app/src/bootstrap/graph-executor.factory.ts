@@ -91,15 +91,10 @@ import {
   PRINCIPAL_TOOL_BUNDLE,
 } from "./ai/principal-tool-source";
 import {
-  type AgentAuthoritySql,
-  createSharedAgentAuthority,
-} from "./agent-authority";
-import {
   type AiAdapterDeps,
   getContainer,
   resolveAiAdapterDeps,
   resolveAppDb,
-  resolveServiceDb,
 } from "./container";
 
 /**
@@ -621,11 +616,9 @@ function createInProcProvider(
           ),
         },
       }),
-      ...createSharedAgentAuthority(
-        resolveServiceDb().$client as unknown as AgentAuthoritySql,
-        container.nodeAdmin,
-        makeLogger({ component: "SharedAgentAuthority" }),
-      ),
+      // The container's one authority: the same guard, admin check and catalog the admin page and /agent/me read.
+      resolvePrincipal: container.agentAuthority.resolvePrincipal,
+      guardDeps: container.agentAuthority.guardDeps,
       isCodingActor: (actor) =>
         serverEnv().COGNI_CODING_ACTOR_IDS.includes(actor),
       sandboxReady: () => {

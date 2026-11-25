@@ -3,7 +3,8 @@
 
 /**
  * Module: `@app/api/v1/agent/register`
- * Purpose: Machine-actor registration endpoint — mints a user row, a billing
+ * Purpose: Machine-actor registration endpoint — mints a user row with its
+ *   external agent_principals row (one transaction), a billing
  *   account, and a 30-day HMAC-signed API key for agents that can reach the
  *   node without a browser session.
  * Scope: Instrumented via wrapRouteHandlerWithLogging so every attempt hits
@@ -12,16 +13,18 @@
  *   other /api/v1/* route. auth.mode=none because the endpoint is the
  *   onboarding seam itself — callers can't present credentials they haven't
  *   been issued yet. Security hardening (invitation token) tracked in bug.0297.
+ *   The name is the text an admin reads on the access table, so a hidden-character name is 400 and a name that matches an
+ *   existing user or one of this node's AI is 409 `name_taken`.
  * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md, bug.0297
  * @public
  */
 
 import { randomUUID } from "node:crypto";
-import { users } from "@cogni/db-schema";
+import { hasHiddenCharacters } from "@cogni/agent-grants";
 import { registerAgentOperation } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
 import { issueAgentApiKey } from "@/app/_lib/auth/request-identity";
-import { getContainer, resolveServiceDb } from "@/bootstrap/container";
+import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
 export const runtime = "nodejs";
@@ -33,18 +36,24 @@ export const POST = wrapRouteHandlerWithLogging(
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
-    const input = parsed.data;
-
-    const db = resolveServiceDb();
-    const id = randomUUID();
-
-    await db.insert(users).values({
-      id,
-      name: input.name,
-      walletAddress: null,
-    });
-
+    // The name is what an admin reads when deciding on this agent's asks. Refuse hidden or direction characters, and any name that
+    // matches (case, spacing, look-alike forms) an existing user or one of this node's AI. A concurrent pair can still race
+    // (no unique index on users.name by design: humans share names); the admin table marks every outside name and shows
+    // the proven binding beside it.
+    if (hasHiddenCharacters(parsed.data.name)) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+    const input = { ...parsed.data, name: parsed.data.name.trim().replace(/\s+/g, " ") };
     const container = getContainer();
+    if (await container.agentAuthority.nameTaken(input.name)) {
+      return NextResponse.json({ error: "name_taken" }, { status: 409 });
+    }
+
+    // REGISTRATION_WRITES_THE_PRINCIPAL: the user and its external agent_principals row are one transaction, so an AI is never
+    // a user with no kind. The key is signed, not stored, so nothing else is written here.
+    const id = randomUUID();
+    await container.agentAuthority.registerAgent({ userId: id, name: input.name });
+
     const billingAccount =
       await container.serviceAccountService.getOrCreateBillingAccountForUser({
         userId: id,

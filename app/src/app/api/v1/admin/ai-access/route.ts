@@ -1,169 +1,108 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Stock 0.13.0 table endpoint. Internal Cogni sandbox permission only. */
-import { randomUUID } from "node:crypto";
+/**
+ * Module: `@app/api/v1/admin/ai-access`
+ * Purpose: ADMIN area, human plane. A node-admin, signed in, lists this node's AI (GET) and turns a permission On (POST: approve a pending ask,
+ *   or grant one of this node's AI) or Off (DELETE: revoke, or `deny: true` to dismiss an ask) by clicking on `/admin/ai-access`.
+ * Scope: HTTP validation and the mint. Every handler gets its `AdminSession` from `requireAdminSession()` and calls `NodeAdminPort` with it. No authority logic.
+ * Invariants:
+ *   - ADMIN_ACTS_IN_ADMIN: the only door for these writes. The old `/api/v1/agent-access/roles` route is gone (404). The AI plane has no twin: an agent asks at `/api/v1/agent/access-requests`; a human admin decides here.
+ *   - ONE_ADMIN_CHECK: a session or a bearer reaches the mint, which runs the one node-admin check on the caller's wallet.
+ *   - FAIL_CLOSED_WITH_DISTINCTION: non-admin 403 `authz_denied`; no configured admins 503 `authz_unavailable`.
+ *   - NODE_DECLARED_SCOPES: an undeclared scope is 400 before any write.
+ *   - ADMIN_NEVER_SHOWS_ACCOUNT_ROWS (ONE_GATE): this table lists and decides NODE rows only. An account permission is its owner's alone, on the profile.
+ *     A one-time link to a waiting node ask highlights through `POST /api/v1/admin/ai-access/preview`.
+ * Side-effects: IO (service-role database read and write), logs `admin.action` and `agent_role.*`
+ * Links: src/app/(admin)/_lib/admin-session.ts, src/ports/node-admin.port.ts, https://cognidao.org/knowledge/node-capability-grants-standard
+ * @public
+ */
 
-import { AgentRolesError } from "@cogni/agent-grants";
+import { AgentRolesError, type PrincipalRef } from "@cogni/agent-grants";
+import { agentRolesListOperation, agentRolesOperation } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
-import { z } from "zod";
 
 import { requireAdminSession } from "@/app/(admin)/_lib/admin-session";
 import { getContainer } from "@/bootstrap/container";
-import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { EVENT_NAMES, failureFields } from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const json = (body: unknown, status = 200) =>
-  NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
-// Strict input refuses caller-supplied approver/admin, account, ask or link fields.
-const targetSchema = z
-  .object({
-    principalUserId: z.string().min(1).max(128),
-    scope: z.literal("sandbox:exec"),
-  })
-  .strict();
+const NO_STORE = { "cache-control": "no-store" } as const;
+/** Every response, errors included, is `no-store`. */
+const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE });
 
-async function handle(request: Request, operation: "list" | "on" | "off") {
-  const started = performance.now();
-  // Correlation is minted here, never accepted from a header or request body.
-  const reqId = randomUUID();
-  let baseLog: ReturnType<typeof makeLogger>;
-  try {
-    baseLog = getContainer().log;
-  } catch {
-    // The mint returns the configuration failure below; this logger needs no container.
-    baseLog = makeLogger({ routeId: "admin.ai-access" });
-  }
-  const log = baseLog.child({
-    reqId,
-    routeId: "admin.ai-access",
-    method: request.method,
-  });
-  let actorUserId: string | null = null;
-  let status = 503;
-  let errorCode: string | null = "authz_unavailable";
-  let reason = "operation_unavailable";
-  const respond = (
-    body: unknown,
-    nextStatus = 200,
-    code: string | null = null,
-    why = "completed",
-  ) => {
-    status = nextStatus;
-    errorCode = code;
-    reason = why;
-    const response = json(body, status);
-    response.headers.set("x-request-id", reqId);
-    return response;
-  };
-  try {
-    const admin = await requireAdminSession(
-      request,
-      `ai_access.${operation}`,
-      log,
-    );
-    if (!admin.ok) {
-      actorUserId = admin.actorUserId;
-      status = admin.response.status;
-      errorCode =
-        status === 401
-          ? "unauthorized"
-          : status === 403
-            ? "authz_denied"
-            : "authz_unavailable";
-      reason = admin.reason;
-      admin.response.headers.set("x-request-id", reqId);
-      return admin.response;
+export const GET = wrapRouteHandlerWithLogging(
+  { routeId: "admin.ai-access.list", auth: { mode: "none" } },
+  async (ctx, request) => {
+    const admin = await requireAdminSession(request, "ai_access.list");
+    if (!admin.ok) return admin.response;
+    try {
+      const view = await getContainer().nodeAdminPort.listNodeAi(admin.session);
+      return json(agentRolesListOperation.output.parse({ canManage: true, ...view }));
+    } catch (error) {
+      ctx.log.error({ event: EVENT_NAMES.AGENT_ROLES_UNAVAILABLE, routeId: "admin.ai-access.list", ...failureFields(error) }, EVENT_NAMES.AGENT_ROLES_UNAVAILABLE);
+      return json({ error: "authz_unavailable" }, 503);
     }
-    actorUserId = admin.session.userId;
+  }
+);
+
+function writeRoute(routeId: string, action: string, write: "on" | "off") {
+  return wrapRouteHandlerWithLogging({ routeId, auth: { mode: "none" } }, async (_ctx, request) => {
+    const admin = await requireAdminSession(request, action);
+    if (!admin.ok) return admin.response;
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "invalid JSON body" }, 400);
+    }
+    const parsed = agentRolesOperation.input.safeParse(body);
+    if (!parsed.success) return json({ error: "invalid input", issues: parsed.error.issues }, 400);
+
+    const ref: PrincipalRef =
+      parsed.data.principalUserId !== undefined
+        ? { principalUserId: parsed.data.principalUserId }
+        : { principalSlug: parsed.data.principal as string };
+    const target = { ref, scope: parsed.data.scope };
     const port = getContainer().nodeAdminPort;
-    if (operation === "list")
-      return respond({
-        canManage: true,
-        ...(await port.listNodeAi(admin.session)),
-      });
-    if (
-      request.headers
-        .get("content-type")
-        ?.split(";")[0]
-        ?.trim()
-        .toLowerCase() !== "application/json"
-    ) {
-      return respond(
-        { error: "invalid_input" },
-        400,
-        "invalid_input",
-        "json_required",
+
+    try {
+      const result =
+        write === "on"
+          ? await port.turnAiPermissionOn(admin.session, target)
+          : parsed.data.deny === true
+            ? await port.dismissAiRequest(admin.session, target)
+            : await port.turnAiPermissionOff(admin.session, target);
+      return json(
+        agentRolesOperation.output.parse({
+          ...(parsed.data.principal !== undefined ? { principal: parsed.data.principal } : {}),
+          scope: parsed.data.scope,
+          ...result,
+        })
       );
+    } catch (error) {
+      if (error instanceof AgentRolesError) {
+        const status =
+          error.code === "principal_not_found"
+            ? 404
+            : error.code === "not_pending"
+              ? 409
+              : error.code === "self_approval" || error.code === "not_allowed"
+                ? 403
+                : 400;
+        return json({ error: error.code }, status);
+      }
+      throw error;
     }
-    const parsed = targetSchema.safeParse(
-      await request.json().catch(() => null),
-    );
-    if (!parsed.success)
-      return respond(
-        { error: "invalid_input" },
-        400,
-        "invalid_input",
-        "invalid_target",
-      );
-    return respond(
-      operation === "on"
-        ? await port.turnAiPermissionOn(admin.session, parsed.data)
-        : await port.turnAiPermissionOff(admin.session, parsed.data),
-    );
-  } catch (error) {
-    if (error instanceof AgentRolesError) {
-      const failureStatus =
-        error.code === "principal_not_found"
-          ? 503
-          : error.code === "self_approval" || error.code === "not_allowed"
-            ? 403
-            : 400;
-      return respond(
-        { error: error.code },
-        failureStatus,
-        error.code,
-        error.code,
-      );
-    }
-    return respond(
-      { error: "authz_unavailable" },
-      503,
-      "authz_unavailable",
-      "operation_unavailable",
-    );
-  } finally {
-    // One terminal event for every exit. Fixed resource only; never serialize the request or exception.
-    log.info(
-      {
-        event: EVENT_NAMES.AI_PERMISSION_COMPLETE,
-        reqId,
-        routeId: "admin.ai-access",
-        actorUserId,
-        operation,
-        principalSlug: "node-ai",
-        scope: "sandbox:exec",
-        resource: "node",
-        status,
-        outcome:
-          status < 400
-            ? "success"
-            : status === 503
-              ? "unavailable"
-              : status === 400
-                ? "invalid"
-                : "denied",
-        errorCode,
-        reason,
-        durationMs: Math.max(0, performance.now() - started),
-      },
-      EVENT_NAMES.AI_PERMISSION_COMPLETE,
-    );
-  }
+  });
 }
 
-export const GET = (request: Request) => handle(request, "list");
-export const POST = (request: Request) => handle(request, "on");
-export const DELETE = (request: Request) => handle(request, "off");
+/** Turning a permission On: approves a pending ask, or grants one of this node's own AI directly. */
+export const POST = writeRoute("admin.ai-access.on", "ai_access.on", "on");
+
+/** Turning a permission Off (revoke), or the x on a pending ask (`deny: true`). */
+export const DELETE = writeRoute("admin.ai-access.off", "ai_access.off", "off");

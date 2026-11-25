@@ -2,117 +2,41 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /**
- * Red's bounded internal-AI host composition. Published functions own grant policy.
- * One server-owned slug and one declared permission; no account or outside rows.
- * Every read is an indexed lookup. Slug writes avoid the package's ID-list lookup.
+ * Module: `@bootstrap/node-admin-port`
+ * Purpose: This node's `NodeAdminPort`: node-wide AI access, delegating to the existing agent authority.
+ * Scope: Composition only. No authority logic, no schema. The `AdminSession` argument is proof the Admin area's mint ran; its user id is the approver,
+ *   and the session itself is the `admin` proof the package's one gate (`canApprove`) asks for on a node row.
+ * Invariants: NO_NEW_AUTHORITY (grant, revoke and deny are `AgentToolAuthority` calls; the decision is the package's `canApprove`).
+ * Side-effects: IO (through the agent authority)
+ * Links: src/ports/node-admin.port.ts, src/bootstrap/agent-authority.ts
+ * @internal
  */
-import {
-  AgentRolesError,
-  grantRole,
-  resolveInternalPrincipal,
-  revokeRole,
-  type WithStore,
-} from "@cogni/agent-grants";
-import { sandboxShellContract } from "@cogni/shared-ai-tools";
-import type { Logger } from "pino";
 
-import type { NodeAdminPort } from "@/ports/node-admin.port";
-import { EVENT_NAMES } from "@/shared/observability";
+import type { ApprovalCaller } from "@cogni/agent-grants";
 
-const PRINCIPAL_SLUG = "node-ai";
+import type { AgentToolAuthority } from "@/bootstrap/agent-authority";
+import type { AdminSession, NodeAdminPort } from "@/ports";
 
-export function createNodeAdminPort(
-  withStore: WithStore,
-  log: Logger,
-): NodeAdminPort {
-  const permission = sandboxShellContract.requires;
-  if (
-    permission?.scope !== "sandbox:exec" ||
-    permission.kind !== "node" ||
-    !permission.label ||
-    !permission.description
-  ) {
-    throw new Error("internal_permission_unavailable");
-  }
-  const declaredScopes = [permission.scope];
-  const scopeKinds = { [permission.scope]: permission.kind };
-  const change =
-    (on: boolean): NodeAdminPort["turnAiPermissionOn"] =>
-    async (session, target) => {
-      // Refuse unknown scopes before opening the store; the client cannot choose authority.
-      if (target.scope !== permission.scope)
-        throw new AgentRolesError("invalid_scope", "unsupported permission");
-      const result = await withStore(async (store) => {
-        const principalUserId = await resolveInternalPrincipal(
-          store,
-          PRINCIPAL_SLUG,
-        );
-        if (!principalUserId)
-          throw new AgentRolesError(
-            "principal_not_found",
-            "internal AI unavailable",
-          );
-        if (target.principalUserId !== principalUserId)
-          throw new AgentRolesError("not_allowed", "unsupported principal");
-        const input = {
-          principalSlug: PRINCIPAL_SLUG,
-          scope: permission.scope,
-          me: { userId: session.userId, admin: session },
-          scopeKinds,
-        };
-        const changed = on
-          ? (await grantRole(store, { ...input, declaredScopes })).created
-          : (await revokeRole(store, input)).revoked;
-        return { principalUserId, changed };
-      });
-      log.info(
-        {
-          event: on
-            ? EVENT_NAMES.AGENT_ROLE_GRANTED
-            : EVENT_NAMES.AGENT_ROLE_REVOKED,
-          principalUserId: result.principalUserId,
-          scope: permission.scope,
-          resource: "node",
-          ...(on
-            ? { approvedBy: session.userId }
-            : { revokedBy: session.userId }),
-          changed: result.changed,
-        },
-        "internal AI permission decision",
-      );
-      return { changed: result.changed };
-    };
+/** The admin session is the proof of node-admin: it rides in `admin`, and only `requireAdminSession()` can make one. */
+const adminCaller = (session: AdminSession): ApprovalCaller => ({ userId: session.userId, admin: session });
+
+export function createNodeAdminPort(authority: AgentToolAuthority): NodeAdminPort {
   return {
-    async listNodeAi() {
-      return withStore(async (store) => {
-        const principalUserId = await resolveInternalPrincipal(
-          store,
-          PRINCIPAL_SLUG,
-        );
-        if (!principalUserId) throw new Error("internal_principal_unavailable");
-        const on = await store.hasLiveRole(principalUserId, permission.scope);
-        return {
-          permissions: [
-            {
-              section: "node",
-              principalUserId,
-              who: PRINCIPAL_SLUG,
-              outside: false,
-              hint: null,
-              scope: permission.scope,
-              label: permission.label,
-              description: permission.description,
-              on,
-              until: null,
-              resource: "node",
-              rowId: null,
-            },
-          ],
-          more: 0,
-        };
-      });
+    listNodeAi: () => authority.listNodeAi(),
+    async turnAiPermissionOn(session, { ref, scope }) {
+      const { principalUserId, created } = await authority.grantRole({ ...ref, scope, me: adminCaller(session) });
+      return { principalUserId, changed: created };
     },
-    turnAiPermissionOn: change(true),
-    turnAiPermissionOff: change(false),
+    async turnAiPermissionOff(session, { ref, scope }) {
+      const { principalUserId, revoked } = await authority.revokeRole({ ...ref, scope, me: adminCaller(session) });
+      return { principalUserId, changed: revoked };
+    },
+    async dismissAiRequest(session, { ref, scope }) {
+      const { principalUserId, denied } = await authority.denyRequest({ ...ref, scope, me: adminCaller(session) });
+      return { principalUserId, changed: denied };
+    },
+    async previewAiRequest(_session, token) {
+      return authority.previewAsk({ token, resource: "node" });
+    },
   };
 }

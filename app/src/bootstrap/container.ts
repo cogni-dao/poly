@@ -69,7 +69,10 @@ import {
 	DoltgresKnowledgeStoreAdapter,
 	wrapPushSafe,
 } from "@cogni/knowledge-store/adapters/doltgres";
-import { parseMcpConfigFromEnv } from "@cogni/langgraph-graphs";
+import {
+	parseMcpConfigFromEnv,
+	SHARED_NODE_CATALOG,
+} from "@cogni/langgraph-graphs";
 import { initAnalytics, shutdownAnalytics } from "@cogni/node-shared/analytics";
 import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared/constants";
 import {
@@ -143,8 +146,10 @@ import {
 } from "@/adapters/test";
 import {
 	type AgentAuthoritySql,
-	createSharedAgentAuthority,
+	type AgentToolAuthority,
+	createAgentToolAuthority,
 } from "@/bootstrap/agent-authority";
+import { POLY_PERMISSION_TOOLS } from "@/bootstrap/ai/permission-tools";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
 import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
 import { createNodeAdminPort } from "@/bootstrap/node-admin-port";
@@ -304,7 +309,7 @@ export interface Container {
 	/** This node's one node-admin authority (repo-spec admin wallets). */
 	nodeAdmin: NodeAdminAuthority;
 	/** AI-access composition only; existing legacy admin surfaces keep their guards. */
-	agentAuthority: ReturnType<typeof createSharedAgentAuthority>;
+	agentAuthority: AgentToolAuthority;
 	nodeAdminPort: NodeAdminPort;
 	/** External-agent knowledge contribution service — undefined when DOLTGRES_URL is unset */
 	knowledgeContributionService: ContributionService | undefined;
@@ -2451,15 +2456,15 @@ function createContainer(): Container {
 
 	// Internal AI permissions (/admin/ai-access): repo-spec admin wallets are the one node-admin authority.
 	const nodeAdmin = createApproversNodeAdminAuthority();
-	const agentAuthority = createSharedAgentAuthority(
-		serviceDb.$client as unknown as AgentAuthoritySql,
+	const agentAuthority = createAgentToolAuthority({
+		// Service role: agent_roles / agent_principals are deny-all for the app role.
+		sql: serviceDb.$client as unknown as AgentAuthoritySql,
 		nodeAdmin,
 		log,
-	);
-	const nodeAdminPort = createNodeAdminPort(
-		agentAuthority.guardDeps.withStore,
-		log,
-	);
+		toolBundle: POLY_PERMISSION_TOOLS,
+		principalCatalog: Object.values(SHARED_NODE_CATALOG),
+	});
+	const nodeAdminPort = createNodeAdminPort(agentAuthority);
 
 	// Deployed work items are Dolt-backed. When the hub is unavailable, fail
 	// closed instead of silently writing ephemeral markdown inside the pod.

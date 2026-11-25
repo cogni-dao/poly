@@ -95,6 +95,7 @@ operator dependency-cruiser rules do not run in this repository.
   - Dependency injection wiring with singleton container
   - Factory functions for adapter construction and per-run executor composition (e.g., createGraphExecutor, createScopedGraphExecutor, createAgentCatalog)
   - Sandbox provider registration (LazySandboxGraphProvider, gated by LITELLM_MASTER_KEY; executable by graph id but not listed in agent discovery; sandbox adapter loaded via dynamic import to avoid Turbopack bundling native deps)
+  - Agent authority (`agent-authority.ts`) over `@cogni/agent-grants`; the grantable node scopes are derived from tool contracts once in `agent-permissions.ts` (fed by `ai/permission-tools.ts`), and one authority serves the tool guard, `/admin/ai-access` and `/api/v1/agent/me`. Poly's account grants (`features/agent-grants`) stay separate
   - Discovery factory for agent listing (listAgentsForApi per DISCOVERY_PIPELINE invariant)
   - Environment-based adapter selection (APP_ENV=test → fakes, production → real adapters including RipgrepAdapter)
   - Logger initialization (one per process)

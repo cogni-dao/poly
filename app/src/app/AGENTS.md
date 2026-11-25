@@ -53,7 +53,8 @@ Next.js App Router delivery layer. UI pages and API routes that expose features 
   - Infra: `/health`, `/openapi.json`, `/meta/route-manifest` (via `(infra)/*`)
   - API: `/api/auth/*`, `/api/v1/chat/completions`
   - Wallet recovery: `/api/v1/poly/wallet/reset-connection` [POST] (owner session; tenant derived server-side)
-  - AI admin: `/admin/ai-access`; `/api/v1/admin/ai-access` [GET/POST/DELETE] — internal Cogni sandbox permission only, shared authority rechecked on every request
+  - AI admin: `/admin/ai-access`; `/api/v1/admin/ai-access` [GET/POST/DELETE] — every node scope the tool contracts declare (`bootstrap/agent-permissions.ts`), On/Off per AI; `/api/v1/admin/ai-access/preview` [POST] one-time ask link lookup (the pinned knowledge-base-ui 0.13.0 table does not call it yet). Poly's account grants and access requests (`/api/v1/poly/agent-grants`, `/api/v1/agent/access-requests`) are separate and unchanged
+  - `/api/v1/agent/me` [GET] — the caller's own kind, bound wallets, admin check and live node grants
   - Agent discovery: `/.well-known/agent.json` [GET] — public discovery document for machine clients
 - **Files considered API:** layout.tsx, page.tsx, loading.tsx, error.tsx, api/\*\*/route.ts, (infra)/\*\*/route.ts, .well-known/\*\*/route.ts
 - **Suspense / error boundaries:** each route group exposes a

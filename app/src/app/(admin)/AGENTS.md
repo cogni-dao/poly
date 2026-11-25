@@ -37,7 +37,7 @@ admin-only surfaces in one role-gated shell.
 - **Exports:** none
 - **Routes:** `/admin` (index linking to admin-only surfaces such as `/gov/review`)
 - **Files considered API:** `layout.tsx`, `admin/page.tsx`
-- `/admin/ai-access` mounts the published direct On/Off table for the internal `node-ai` sandbox permission only. `/api/v1/admin/ai-access` rechecks cookie/bearer identity through the sole AI-admin mint, then `guardDeps.adminCheck` and `NodeAdminPort`. No account or outside-AI journey is exposed.
+- `/admin/ai-access` mounts the published direct On/Off table for every node scope this node's tool contracts declare (derived once in `bootstrap/agent-permissions.ts`, never a literal). `/api/v1/admin/ai-access` rechecks cookie/bearer identity through the sole AI-admin mint, then `agentAuthority.adminCheck` and `NodeAdminPort`. No account or outside-AI journey is exposed.
 
 ## Auth contract
 
