@@ -29,7 +29,7 @@ vi.mock("@/shared/config/repoSpec.server", () => ({
 import { GET } from "@/app/.well-known/agent.json/route";
 
 describe("agent access discovery", () => {
-  it("publishes self-list, request, poll, and scoped P/L actions with schemas", async () => {
+  it("publishes the one ask door, the gated credits read, and scoped P/L actions with schemas", async () => {
     const response = await GET(
       new Request("http://0.0.0.0:3000/.well-known/agent.json", {
         headers: {
@@ -42,20 +42,20 @@ describe("agent access discovery", () => {
       actions: Record<string, Record<string, unknown>>;
     };
 
-    expect(body.actions.listOwnAgentAccessRequests).toMatchObject({
+    expect(body.actions.listMyPermissions).toMatchObject({
       method: "GET",
       endpoint: "https://poly.example.test/api/v1/agent/access-requests",
       auth: { type: "bearer" },
     });
-    expect(body.actions.requestAgentAccess).toMatchObject({
+    expect(body.actions.requestPermission).toMatchObject({
       method: "POST",
       endpoint: "https://poly.example.test/api/v1/agent/access-requests",
       auth: { type: "bearer" },
     });
-    expect(body.actions.pollAgentAccess).toMatchObject({
+    expect(body.actions.readAccountCredits).toMatchObject({
       method: "GET",
       endpoint:
-        "https://poly.example.test/api/v1/agent/access-requests/{id}",
+        "https://poly.example.test/api/v1/accounts/{accountId}/credits",
       auth: { type: "bearer" },
     });
     expect(body.actions.readCopyTradePnl).toMatchObject({
@@ -65,9 +65,9 @@ describe("agent access discovery", () => {
       auth: { type: "bearer", requiredScope: "account:read" },
     });
     for (const action of [
-      body.actions.listOwnAgentAccessRequests,
-      body.actions.requestAgentAccess,
-      body.actions.pollAgentAccess,
+      body.actions.listMyPermissions,
+      body.actions.requestPermission,
+      body.actions.readAccountCredits,
       body.actions.readCopyTradePnl,
     ]) {
       expect(action).toHaveProperty("inputSchema");

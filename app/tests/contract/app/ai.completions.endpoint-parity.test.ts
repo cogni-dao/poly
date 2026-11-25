@@ -150,6 +150,8 @@ function setupMocks(
       child: vi.fn().mockReturnThis(),
     },
     clock: fakeClock,
+    agentAuthority: { payerFor: async () => null },
+    serviceAccountService: { getBillingAccountById: async () => null },
     executionRequestPort,
     runStream,
   } as never);
@@ -184,6 +186,8 @@ function setupMocksWithError(error: Error) {
       child: vi.fn().mockReturnThis(),
     },
     clock: fakeClock,
+    agentAuthority: { payerFor: async () => null },
+    serviceAccountService: { getBillingAccountById: async () => null },
     executionRequestPort: createExecutionRequestPortMock(),
     runStream: createRunStreamMock({ responseContent: "" }),
   } as never);

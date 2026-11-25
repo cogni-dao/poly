@@ -134,6 +134,11 @@ vi.mock("@/ports/server", () => ({
   isGrantScopeMismatchError: () => false,
 }));
 
+// A bearer key is checked against the credential store (V1_SUPERSEDED); no revocable key was ever confirmed here.
+vi.mock("@/bootstrap/agent-credentials", () => ({
+  getAgentCredentialStore: () => ({ everConfirmed: async () => false }),
+}));
+
 vi.mock("@/bootstrap/container", () => ({
   getTemporalWorkflowClient: async () => ({
     client: {
@@ -152,6 +157,7 @@ vi.mock("@/bootstrap/container", () => ({
         defaultVirtualKeyId: VIRTUAL_KEY_ID,
       }),
     },
+    agentAuthority: { payerFor: async () => null },
     executionRequestPort: {
       checkIdempotency: mocks.checkIdempotency,
       createPendingRequest: mocks.createPendingRequest,

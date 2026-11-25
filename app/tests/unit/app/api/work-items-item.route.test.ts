@@ -97,7 +97,7 @@ describe("PATCH /api/v1/work/items/:id", () => {
 
 		expect(mockPatchWorkItem).toHaveBeenCalledWith(
 			{ id: "task.5001", reason: "test change", set: { title: "right target" } },
-			{ id: "agent-1" },
+			{ actor: "agent-1" },
 		);
 	});
 

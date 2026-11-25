@@ -9,7 +9,7 @@
  * Scope: Server-only. The door (`sameDoor` + an account param) has already decided owner | delegated | nothing; this reads under row-level security.
  * Invariants:
  *   - RLS_DECIDES_ROWS: the read runs in an app-role tenant transaction with `app.current_user_id` = the CALLER (the owner, or the agent), never the service
- *     role, so a delegated agent sees rows only through `agent_has_scope` and the door and the database cannot disagree.
+ *     role, so a delegated agent sees rows only through the delegated `agent_roles` read policies (migration 0094) and the door and the database cannot disagree.
  *   - ACCOUNT_404_NON_DISCLOSING: an account the database hides from the caller is `null`; the route answers one 404.
  * Side-effects: IO (RLS-scoped reads of billing_accounts and credit_ledger)
  * @public

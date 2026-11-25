@@ -66,7 +66,7 @@ describe("resolveRequestIdentity — circular-recursion regression", () => {
 
     const user = await resolveRequestIdentity();
 
-    expect(user).toEqual(FAKE_SESSION_USER);
+    expect(user).toEqual({ ...FAKE_SESSION_USER, via: "session" });
     expect(mockGetServerSessionUser).toHaveBeenCalledTimes(1);
   });
 

@@ -58,6 +58,8 @@ vi.mock("@/bootstrap/container", () => ({
   }),
   getContainer: () => ({
     runStream: { subscribe: mocks.subscribe },
+    agentAuthority: { payerFor: async () => null },
+    serviceAccountService: { getBillingAccountById: async () => null },
     executionRequestPort: {
       checkIdempotency: mocks.checkIdempotency,
       createPendingRequest: mocks.createPendingRequest,

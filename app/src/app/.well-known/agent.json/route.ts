@@ -19,6 +19,11 @@
  */
 
 import {
+	APPROVAL_FRAGMENT_KEY,
+	APPROVAL_PAGE,
+	resourceOfKind,
+} from "@cogni/agent-grants";
+import {
 	GoalsProgressSchema,
 	MetricComputeInputSchema,
 	MetricHistoryInputSchema,
@@ -30,7 +35,14 @@ import {
 	MetricViewSchema,
 } from "@cogni-dao/metrics/contracts";
 import {
+	agentAccessRequestCreateOperation,
+	agentAccessRequestListOperation,
+	confirmAgentCredentialOperation,
+	creditsSummaryOperation,
 	knowledgeHistoryOperation,
+	revokeAgentCredentialOperation,
+	rotateAgentCredentialOperation,
+	upgradeAgentCredentialOperation,
 	workItemsClaimOperation,
 	workItemsCoordinationOperation,
 	workItemsCreateOperation,
@@ -42,13 +54,9 @@ import {
 	workItemsPatchOperation,
 	workItemsReleaseOperation,
 } from "@cogni/node-contracts";
-import {
-	polyAgentAccessRequestAgentListOperation,
-	polyAgentAccessRequestCreateOperation,
-	polyAgentAccessRequestPollOperation,
-} from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { publicOrigin } from "@/app/_lib/public-origin";
 // Imported from the discovery module directly, not the feature barrel: this
 // public endpoint must stay a pure projection and never pull the executor (and
 // therefore a DB client) into its module graph.
@@ -64,6 +72,11 @@ import {
 	getNodeName,
 	getNodeThumbnail,
 } from "@/shared/config/repoSpec.server";
+import {
+	buildPermissionCatalog,
+	buildRequiresById,
+} from "@/bootstrap/agent-permissions";
+import { POLY_PERMISSION_TOOLS } from "@/bootstrap/ai/permission-tools";
 import { serverEnv } from "@/shared/env";
 
 export const runtime = "nodejs";
@@ -89,6 +102,23 @@ function publicOrigin(request: Request): string {
 export async function GET(request: Request) {
 	const env = serverEnv();
 	const origin = publicOrigin(request);
+	// DECLARED_ONCE_SHOWN_EVERYWHERE: rendered from the grant declarations on every read, never a copy table.
+	const { permissions: askable } = buildPermissionCatalog(
+		buildRequiresById(POLY_PERMISSION_TOOLS),
+	);
+	// Each askable permission says where its approval link opens, from its declared kind (an account permission: the person's profile; any
+	// other: the node-admin page). The ask returns the link itself (`approvalUrl`); this is its shape, so an agent can plan before it asks.
+	const permissions = askable.map((p) => ({
+		...p,
+		approvalLink: {
+			page: `${origin}${APPROVAL_PAGE[resourceOfKind(p.kind)]}`,
+			fragment: `#${APPROVAL_FRAGMENT_KEY}=<one-time token>`,
+			decidedBy:
+				resourceOfKind(p.kind) === "account"
+					? "the account owner"
+					: "a node admin",
+		},
+	}));
 	return NextResponse.json({
 		name: "Cogni Node API",
 		version: "v1",
@@ -122,9 +152,14 @@ export async function GET(request: Request) {
 			workItemHeartbeat: `${origin}/api/v1/work/items/{id}/heartbeat`,
 			workItemCoordination: `${origin}/api/v1/work/items/{id}/coordination`,
 			agentAccessRequests: `${origin}/api/v1/agent/access-requests`,
+			accountCredits: `${origin}/api/v1/accounts/{accountId}/credits`,
 			// GENERATED_DISCOVERY: one entry per account-read descriptor.
 			...accountReadDiscoveryEndpoints(origin),
 		},
+		// Scopes an outside agent can ask for (requestPermission). Derived from the declarations, not listed here.
+		permissions,
+		permissionsHow:
+			"Ask with requestPermission. The answer carries approvalUrl: one link, one-time, 24 hours. Give it to the person who decides: a node admin for a node permission, the account owner for an account permission (signed in, on their profile). A person who is signed out signs in first, then opens the link again (the link is a URL fragment and does not survive the sign-in redirect). Poll listMyPermissions for the state.",
 		actions: {
 			readGoalsProgress: {
 				method: "GET",
@@ -178,38 +213,58 @@ export async function GET(request: Request) {
 				),
 				outputSchema: z.toJSONSchema(MetricObservationSchema),
 			},
-			listOwnAgentAccessRequests: {
-				method: "GET",
-				endpoint: `${origin}/api/v1/agent/access-requests`,
+			upgradeCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/upgrade`,
 				auth: { type: "bearer" },
-				inputSchema: z.toJSONSchema(
-					polyAgentAccessRequestAgentListOperation.input,
-				),
-				outputSchema: z.toJSONSchema(
-					polyAgentAccessRequestAgentListOperation.output,
-				),
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(upgradeAgentCredentialOperation.output),
 			},
-			requestAgentAccess: {
+			confirmCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/confirm`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(confirmAgentCredentialOperation.output),
+			},
+			rotateCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/rotate`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(rotateAgentCredentialOperation.output),
+			},
+			revokeCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/revoke`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(revokeAgentCredentialOperation.output),
+			},
+			requestPermission: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/agent/access-requests`,
 				auth: { type: "bearer" },
-				inputSchema: z.toJSONSchema(
-					polyAgentAccessRequestCreateOperation.input,
-				),
-				outputSchema: z.toJSONSchema(
-					polyAgentAccessRequestCreateOperation.output,
-				),
+				inputSchema: z.toJSONSchema(agentAccessRequestCreateOperation.input),
+				outputSchema: z.toJSONSchema(agentAccessRequestCreateOperation.output),
 			},
-			pollAgentAccess: {
+			listMyPermissions: {
 				method: "GET",
-				endpoint: `${origin}/api/v1/agent/access-requests/{id}`,
+				endpoint: `${origin}/api/v1/agent/access-requests`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(agentAccessRequestListOperation.output),
+			},
+			readAccountCredits: {
+				method: "GET",
+				// Needs a live `account:read` grant from the account's owner (ask for it with requestPermission). Without one, or after it ends or
+				// is turned Off, the answer is 404, the same as for an account that does not exist.
+				endpoint: `${origin}/api/v1/accounts/{accountId}/credits`,
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(
-					polyAgentAccessRequestPollOperation.input,
+					creditsSummaryOperation.input.extend({ accountId: z.string() }),
 				),
-				outputSchema: z.toJSONSchema(
-					polyAgentAccessRequestPollOperation.output,
-				),
+				outputSchema: z.toJSONSchema(creditsSummaryOperation.output),
 			},
 			// GENERATED_DISCOVERY: method, path, required scope and both JSON
 			// schemas are projected from the pure account-read descriptors, so an

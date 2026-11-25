@@ -21,6 +21,10 @@ const ingress = vi.hoisted(() => ({
   },
 }));
 vi.mock("next/headers", () => ({ headers: async () => ingress.headers }));
+// A bearer key is checked against the credential store (V1_SUPERSEDED); no revocable key was ever confirmed here.
+vi.mock("@/bootstrap/agent-credentials", () => ({
+  getAgentCredentialStore: () => ({ everConfirmed: async () => false }),
+}));
 vi.mock("@/lib/auth/server", () => ({
   getServerSessionUser: async () => ingress.cookieUser,
 }));
