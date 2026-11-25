@@ -35,6 +35,7 @@ function target(overrides: Partial<EnumeratedTarget> = {}): EnumeratedTarget {
     targetRangeMaxUsdc: null,
     mirrorMaxAllocPerConditionUsdc: null,
     mirrorCapitalBudgetUsdc: null,
+    minEntryPrice: null,
     positionGapBudgetGroup: {
       positionGapTargetCount: 0,
       explicitBudgetTotalUsdc: 0,
@@ -67,6 +68,7 @@ describe("copy-trade target reconciliation", () => {
     ["position range", { targetRangeMaxUsdc: 20 }],
     ["position allocation", { mirrorMaxAllocPerConditionUsdc: 50 }],
     ["portfolio budget", { mirrorCapitalBudgetUsdc: 200 }],
+    ["entry-price floor set", { minEntryPrice: 0.5 }],
     [
       "account budget group",
       {

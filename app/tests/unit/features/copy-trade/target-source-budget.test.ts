@@ -4,7 +4,11 @@
 import { describe, expect, it } from "vitest";
 
 import { effectivePositionGapBudget } from "@/features/copy-trade/position-gap-budget";
-import { positionGapBudgetGroups } from "@/features/copy-trade/target-source";
+import { buildMirrorTargetConfig } from "@/bootstrap/jobs/copy-trade-mirror.job";
+import {
+	minEntryPriceFromColumn,
+	positionGapBudgetGroups,
+} from "@/features/copy-trade/target-source";
 
 describe("position-gap runtime budget grouping", () => {
 	it("fails closed when more than one position-gap target shares an account", () => {
@@ -75,4 +79,38 @@ describe("position-gap runtime budget grouping", () => {
       unbudgetedTargetCount: 0,
     });
   });
+});
+
+describe("min_entry_price loader mapping (story.5028)", () => {
+	const RN1 = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea" as const;
+
+	it("maps the numeric(5,4) column to a number, NULL to off", () => {
+		expect(minEntryPriceFromColumn("0.5000")).toBe(0.5);
+		expect(minEntryPriceFromColumn(0.25)).toBe(0.25);
+		expect(minEntryPriceFromColumn(null)).toBeNull();
+		// DB CHECK makes these unreachable; they must never turn the floor on.
+		expect(minEntryPriceFromColumn("0.0000")).toBeNull();
+		expect(minEntryPriceFromColumn("1.0000")).toBeNull();
+	});
+
+	it("threads the stored floor into sizing.min_entry_price; NULL omits the key", () => {
+		const base = {
+			targetWallet: RN1,
+			billingAccountId: "billing-1",
+			createdByUserId: "user-1",
+			sizingPolicyKind: "target_percentile_scaled" as const,
+		};
+		const on = buildMirrorTargetConfig({
+			...base,
+			minEntryPrice: minEntryPriceFromColumn("0.5000") as number,
+		});
+		expect(on.sizing).toMatchObject({ min_entry_price: 0.5 });
+
+		const stored = minEntryPriceFromColumn(null);
+		const off = buildMirrorTargetConfig({
+			...base,
+			...(stored !== null ? { minEntryPrice: stored } : {}),
+		});
+		expect("min_entry_price" in off.sizing).toBe(false);
+	});
 });

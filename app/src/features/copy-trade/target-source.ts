@@ -104,6 +104,8 @@ export interface EnumeratedTarget {
   mirrorMaxAllocPerConditionUsdc: number | null;
   /** Null means full mirror NAV when this is the account's only position-gap target. */
   mirrorCapitalBudgetUsdc: number | null;
+  /** story.5028 — entry-price floor (0<x<1) for target_percentile_scaled; null = off. */
+  minEntryPrice: number | null;
   /** Account-wide allocation inputs, computed from the same eligible row set. */
   positionGapBudgetGroup: PositionGapBudgetGroup;
 }
@@ -126,6 +128,21 @@ export interface UserTargetRow {
   mirrorMaxAllocPerConditionUsdc: number | null;
   /** Position-gap portfolio-scale budget; null is automatic/full-NAV compatible. */
   mirrorCapitalBudgetUsdc: number | null;
+  /** story.5028 — entry-price floor; null = off. */
+  minEntryPrice: number | null;
+}
+
+/**
+ * story.5028 — `poly_copy_trade_targets.min_entry_price` (numeric(5,4), driver
+ * returns a string) -> number. NULL = floor off. Any value outside 0<x<1 is
+ * treated as off (the DB CHECK makes that unreachable; fail open to legacy).
+ */
+export function minEntryPriceFromColumn(
+  value: string | number | null
+): number | null {
+  if (value === null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : null;
 }
 
 export interface CopyTradeTargetSource {
@@ -186,6 +203,7 @@ export function envTargetSource(
       targetRangeMaxUsdc: null,
       mirrorMaxAllocPerConditionUsdc: null,
       mirrorCapitalBudgetUsdc: null,
+      minEntryPrice: null,
     }))
   );
   const enumerated: readonly EnumeratedTarget[] = Object.freeze(
@@ -201,6 +219,7 @@ export function envTargetSource(
       targetRangeMaxUsdc: null,
       mirrorMaxAllocPerConditionUsdc: null,
       mirrorCapitalBudgetUsdc: null,
+      minEntryPrice: null,
       positionGapBudgetGroup: {
         positionGapTargetCount: 0,
         explicitBudgetTotalUsdc: 0,
@@ -270,6 +289,7 @@ export function dbTargetSource(
               polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
             mirror_capital_budget_usdc:
               polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
+            min_entry_price: polyCopyTradeTargets.minEntryPrice,
           })
           .from(polyCopyTradeTargets)
           .where(isNull(polyCopyTradeTargets.disabledAt))
@@ -293,6 +313,7 @@ export function dbTargetSource(
           r.mirror_capital_budget_usdc === null
             ? null
             : Number(r.mirror_capital_budget_usdc),
+        minEntryPrice: minEntryPriceFromColumn(r.min_entry_price),
       }));
     },
 
@@ -339,6 +360,7 @@ export function dbTargetSource(
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
           mirror_capital_budget_usdc:
             polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
+          min_entry_price: polyCopyTradeTargets.minEntryPrice,
         })
         .from(polyCopyTradeTargets);
 
@@ -415,6 +437,7 @@ export function dbTargetSource(
           r.mirror_capital_budget_usdc === null
             ? null
             : Number(r.mirror_capital_budget_usdc),
+        minEntryPrice: minEntryPriceFromColumn(r.min_entry_price),
         positionGapBudgetGroup:
           budgetGroups.get(r.billing_account_id) ??
           summarizePositionGapBudgetGroup([], 0),

@@ -40,6 +40,20 @@ const mirrorMaxUsdcPerTradeSchema = z
 const mirrorCapitalBudgetUsdcSchema = mirrorMaxUsdcPerTradeSchema.nullable();
 
 /**
+ * story.5028 — optional entry-price floor for `target_percentile_scaled`.
+ * Strictly between 0 and 1 (DB CHECK mirrors it), at most 4 decimals
+ * (`numeric(5,4)`); null means off.
+ */
+const minEntryPriceSchema = z
+  .number()
+  .gt(0)
+  .lt(1)
+  .refine((n) => Math.abs(n * 10_000 - Math.round(n * 10_000)) < 1e-6, {
+    message: "Expected a value with at most 4 decimal places",
+  })
+  .nullable();
+
+/**
  * Per-target sizing-policy kind. `'auto'` (default) preserves legacy
  * snapshot-derived behavior — `buildSizingPolicy` infers
  * `target_percentile_scaled` when the wallet has a curated snapshot, else
@@ -94,6 +108,11 @@ const targetPolicySchema = z.object({
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
   /** Position-gap portfolio budget. Null/omitted uses full NAV for one target. */
   mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema.optional(),
+  /**
+   * Entry-price floor (0<x<1) for `target_percentile_scaled`; BUYs below it
+   * skip. Null/omitted = off. On PATCH, omitted leaves the stored value.
+   */
+  min_entry_price: minEntryPriceSchema.optional(),
 });
 
 const targetSchema = z.object({
@@ -126,6 +145,8 @@ const targetSchema = z.object({
     mirrorMaxAllocPerConditionUsdcSchema.nullable(),
   /** Position-gap portfolio budget. Null means full NAV for one target. */
   mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema,
+  /** Entry-price floor for `target_percentile_scaled`; null = off. */
+  min_entry_price: minEntryPriceSchema.optional(),
   /** Optimistic-concurrency token and cold-start fence for this configuration. */
   mirror_activated_at: isoTimestampSchema,
   /** Provenance: `"env"` for the local-dev fallback; `"db"` once `dbTargetSource` is wired. */
@@ -161,6 +182,8 @@ const targetCreateInputSchema = z.object({
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
   /** Position-gap portfolio budget. Null/omitted uses full NAV for one target. */
   mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema.optional(),
+  /** Entry-price floor (0<x<1) for `target_percentile_scaled`; null/omitted = off. */
+  min_entry_price: minEntryPriceSchema.optional(),
 });
 
 export const polyCopyTradeTargetCreateOperation = {
