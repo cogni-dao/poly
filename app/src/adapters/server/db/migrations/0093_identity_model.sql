@@ -28,7 +28,44 @@ END
 $$;--> statement-breakpoint
 UPDATE "user_bindings" SET external_id = lower(external_id) WHERE provider = 'wallet' AND external_id <> lower(external_id);--> statement-breakpoint
 ALTER TABLE "user_bindings" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-CREATE TABLE "agent_credentials" (
+-- ADOPTION (story.0090): a database may already hold these tables (agent_credentials and payer_bindings leaked onto candidate from node-template's
+-- shared migration path, or a draft shape). One session-local helper decides, per table, what is there:
+--   * absent: nothing to do, the CREATE below makes it;
+--   * the exact released column shape: adopted. Policies are removed (deny-all by design: no policy, FORCE RLS) and every named constraint and
+--     index below is dropped and re-added, so a table with missing or older definitions converges;
+--   * any other shape: replaced only when it holds NO rows (a leaked draft has nothing to lose); with rows it aborts the migration loudly.
+-- The helper acts as the table's own owner when that is a role this session may assume, so ALTER and DROP are permitted. Nothing here is
+-- application runtime DDL.
+CREATE OR REPLACE FUNCTION pg_temp.adopt_identity_table(tab text, spec jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE rel regclass := to_regclass('public.' || tab); owner_name text; actual jsonb; pol record; n bigint;
+BEGIN
+  IF rel IS NULL THEN RETURN; END IF;
+  SELECT r.rolname INTO owner_name FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner WHERE c.oid = rel;
+  IF owner_name IS DISTINCT FROM current_user THEN
+    EXECUTE format('SET LOCAL ROLE %I', owner_name);
+  END IF;
+  SELECT jsonb_object_agg(a.attname, jsonb_build_array(format_type(a.atttypid, a.atttypmod), a.attnotnull)) INTO actual
+  FROM pg_attribute a WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped;
+  IF actual IS DISTINCT FROM spec THEN
+    EXECUTE format('ALTER TABLE %I NO FORCE ROW LEVEL SECURITY', tab);
+    EXECUTE format('SELECT count(*) FROM %I', tab) INTO n;
+    IF n > 0 THEN
+      RAISE EXCEPTION 'incompatible existing table % holds % rows with a different column shape', tab, n;
+    END IF;
+    EXECUTE format('DROP TABLE %I CASCADE', tab);
+  ELSE
+    FOR pol IN SELECT polname FROM pg_policy WHERE polrelid = rel LOOP
+      EXECUTE format('DROP POLICY %I ON %I', pol.polname, tab);
+    END LOOP;
+  END IF;
+END $$;
+--> statement-breakpoint
+SELECT pg_temp.adopt_identity_table('agent_credentials', '{"id":["uuid",true],"user_id":["text",true],"token_hash":["text",true],"created_from":["text",true],"predecessor_id":["uuid",false],"issued_at":["timestamp with time zone",true],"expires_at":["timestamp with time zone",true],"renew_until":["timestamp with time zone",true],"pending_expires_at":["timestamp with time zone",false],"confirmed_at":["timestamp with time zone",false],"revoked_at":["timestamp with time zone",false],"revoked_reason":["text",false],"revoked_by":["text",false]}'::jsonb);
+--> statement-breakpoint
+SELECT pg_temp.adopt_identity_table('payer_bindings', '{"id":["uuid",true],"subject_user_id":["text",true],"billing_account_id":["text",true],"approved_by":["text",false],"approved_at":["timestamp with time zone",false],"revoked_at":["timestamp with time zone",false],"revoked_by":["text",false],"created_at":["timestamp with time zone",true]}'::jsonb);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "agent_credentials" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" text NOT NULL,
 	"token_hash" text NOT NULL,
@@ -41,13 +78,10 @@ CREATE TABLE "agent_credentials" (
 	"confirmed_at" timestamp with time zone,
 	"revoked_at" timestamp with time zone,
 	"revoked_reason" text,
-	"revoked_by" text,
-	CONSTRAINT "agent_credentials_created_from_canonical" CHECK ("agent_credentials"."created_from" IN ('spawn_grant','rotation','key_upgrade','binding_recovery','recovery_grant')),
-	CONSTRAINT "agent_credentials_renew_after_expiry" CHECK ("agent_credentials"."renew_until" > "agent_credentials"."expires_at")
+	"revoked_by" text
 );
 --> statement-breakpoint
-ALTER TABLE "agent_credentials" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
-CREATE TABLE "payer_bindings" (
+CREATE TABLE IF NOT EXISTS "payer_bindings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"subject_user_id" text NOT NULL,
 	"billing_account_id" text NOT NULL,
@@ -55,24 +89,84 @@ CREATE TABLE "payer_bindings" (
 	"approved_at" timestamp with time zone,
 	"revoked_at" timestamp with time zone,
 	"revoked_by" text,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "payer_bindings_no_self_approval" CHECK ("payer_bindings"."approved_by" IS NULL OR "payer_bindings"."approved_by" <> "payer_bindings"."subject_user_id"),
-	CONSTRAINT "payer_bindings_approval_is_paired" CHECK (("payer_bindings"."approved_by" IS NULL) = ("payer_bindings"."approved_at" IS NULL))
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "payer_bindings" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "agent_credentials" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+-- A table adopted from node-template 0039 alone may carry the draft value `legacy_upgrade` (renamed `key_upgrade` in 0040). Lift FORCE for this data statement only,
+-- inside the migration transaction (a FORCE RLS table with no policy shows the owner zero rows); it is restored below.
+-- A table adopted from node-template 0039 alone may carry the draft value `legacy_upgrade` (renamed `key_upgrade` in 0040). Lift FORCE for this data statement only,
+-- inside the migration transaction (a FORCE RLS table with no policy shows the owner zero rows); it is restored below.
+ALTER TABLE "agent_credentials" NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+UPDATE "agent_credentials" SET "created_from" = 'key_upgrade' WHERE "created_from" = 'legacy_upgrade';
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" DROP CONSTRAINT IF EXISTS "agent_credentials_created_from_canonical";
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" ADD CONSTRAINT "agent_credentials_created_from_canonical" CHECK ("agent_credentials"."created_from" IN ('spawn_grant','rotation','key_upgrade','binding_recovery','recovery_grant'));
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" DROP CONSTRAINT IF EXISTS "agent_credentials_renew_after_expiry";
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" ADD CONSTRAINT "agent_credentials_renew_after_expiry" CHECK ("agent_credentials"."renew_until" > "agent_credentials"."expires_at");
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" DROP CONSTRAINT IF EXISTS "payer_bindings_no_self_approval";
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_no_self_approval" CHECK ("payer_bindings"."approved_by" IS NULL OR "payer_bindings"."approved_by" <> "payer_bindings"."subject_user_id");
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" DROP CONSTRAINT IF EXISTS "payer_bindings_approval_is_paired";
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_approval_is_paired" CHECK (("payer_bindings"."approved_by" IS NULL) = ("payer_bindings"."approved_at" IS NULL));
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" DROP CONSTRAINT IF EXISTS "agent_credentials_user_id_users_id_fk";
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" ADD CONSTRAINT "agent_credentials_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" DROP CONSTRAINT IF EXISTS "agent_credentials_predecessor_id_fk";
+--> statement-breakpoint
+ALTER TABLE "agent_credentials" ADD CONSTRAINT "agent_credentials_predecessor_id_fk" FOREIGN KEY ("predecessor_id") REFERENCES "public"."agent_credentials"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" DROP CONSTRAINT IF EXISTS "payer_bindings_subject_user_id_users_id_fk";
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_subject_user_id_users_id_fk" FOREIGN KEY ("subject_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" DROP CONSTRAINT IF EXISTS "payer_bindings_billing_account_id_billing_accounts_id_fk";
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_billing_account_id_billing_accounts_id_fk" FOREIGN KEY ("billing_account_id") REFERENCES "public"."billing_accounts"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" DROP CONSTRAINT IF EXISTS "payer_bindings_approved_by_users_id_fk";
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_approved_by_users_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" DROP CONSTRAINT IF EXISTS "payer_bindings_revoked_by_users_id_fk";
+--> statement-breakpoint
+ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_revoked_by_users_id_fk" FOREIGN KEY ("revoked_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_credentials_user_live_idx";
+--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_credentials_token_hash_unique";
+--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_credentials_token_hash_unique" ON "agent_credentials" USING btree ("token_hash");
+--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_credentials_one_pending_successor";
+--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_credentials_one_pending_successor" ON "agent_credentials" USING btree ("predecessor_id") WHERE "agent_credentials"."confirmed_at" IS NULL AND "agent_credentials"."revoked_at" IS NULL;
+--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_credentials_user_idx";
+--> statement-breakpoint
+CREATE INDEX "agent_credentials_user_idx" ON "agent_credentials" USING btree ("user_id");
+--> statement-breakpoint
+DROP INDEX IF EXISTS "payer_bindings_open_per_subject";
+--> statement-breakpoint
+CREATE UNIQUE INDEX "payer_bindings_open_per_subject" ON "payer_bindings" USING btree ("subject_user_id") WHERE "payer_bindings"."revoked_at" IS NULL;
+--> statement-breakpoint
+DROP INDEX IF EXISTS "payer_bindings_account_idx";
+--> statement-breakpoint
+CREATE INDEX "payer_bindings_account_idx" ON "payer_bindings" USING btree ("billing_account_id");
+--> statement-breakpoint
 ALTER TABLE "link_transactions" DROP CONSTRAINT "link_transactions_provider_check";--> statement-breakpoint
-ALTER TABLE "agent_credentials" ADD CONSTRAINT "agent_credentials_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_credentials" ADD CONSTRAINT "agent_credentials_predecessor_id_fk" FOREIGN KEY ("predecessor_id") REFERENCES "public"."agent_credentials"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_subject_user_id_users_id_fk" FOREIGN KEY ("subject_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_billing_account_id_billing_accounts_id_fk" FOREIGN KEY ("billing_account_id") REFERENCES "public"."billing_accounts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_approved_by_users_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payer_bindings" ADD CONSTRAINT "payer_bindings_revoked_by_users_id_fk" FOREIGN KEY ("revoked_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_credentials_token_hash_unique" ON "agent_credentials" USING btree ("token_hash");--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_credentials_one_pending_successor" ON "agent_credentials" USING btree ("predecessor_id") WHERE "agent_credentials"."confirmed_at" IS NULL AND "agent_credentials"."revoked_at" IS NULL;--> statement-breakpoint
-CREATE INDEX "agent_credentials_user_idx" ON "agent_credentials" USING btree ("user_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "payer_bindings_open_per_subject" ON "payer_bindings" USING btree ("subject_user_id") WHERE "payer_bindings"."revoked_at" IS NULL;--> statement-breakpoint
-CREATE INDEX "payer_bindings_account_idx" ON "payer_bindings" USING btree ("billing_account_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "user_bindings_wallet_lower_unique" ON "user_bindings" USING btree ("provider",lower("external_id")) WHERE "user_bindings"."provider" = 'wallet';--> statement-breakpoint
 ALTER TABLE "link_transactions" ADD CONSTRAINT "link_transactions_provider_check" CHECK ("link_transactions"."provider" IN ('github', 'discord', 'google', 'wallet'));
 --> statement-breakpoint
