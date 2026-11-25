@@ -14,6 +14,7 @@
  * @public
  */
 
+import { NODE_LANGGRAPH_CATALOG as SHARED_NODE_CATALOG } from "@cogni/shared-langgraph-graphs";
 import {
   AUTORESEARCH_REGISTRY_SWARM_GRAPH_NAME,
   AUTORESEARCH_SINGLE_LANE_GRAPH_NAME,
@@ -72,6 +73,7 @@ import type { CreateGraphFn } from "./inproc/types";
  */
 interface CatalogEntry {
   readonly displayName: string;
+  readonly sharedRuntime?: boolean;
   readonly description: string;
   /** Native tool IDs this graph may use. Providers resolve from TOOL_CATALOG. */
   readonly toolIds: readonly string[];
@@ -85,7 +87,7 @@ interface CatalogEntry {
 const createAutoresearchCatalogEntry = (
   displayName: string,
   description: string,
-  systemPrompt: string
+  systemPrompt: string,
 ): CatalogEntry => ({
   displayName,
   description,
@@ -105,22 +107,23 @@ const createAutoresearchCatalogEntry = (
  * Per CATALOG_SINGLE_SOURCE_OF_TRUTH: graphs are defined here, not in bootstrap.
  */
 export const LANGGRAPH_CATALOG: Readonly<Record<string, CatalogEntry>> = {
+  cogni: { ...SHARED_NODE_CATALOG.cogni, sharedRuntime: true },
   [AUTORESEARCH_SINGLE_LANE_GRAPH_NAME]: createAutoresearchCatalogEntry(
     "Autoresearch Single Lane",
     "Karpathy-style single-lane experiment loop with Thinker, Flasher, Eval, and Judge",
-    AUTORESEARCH_SINGLE_LANE_PROMPT
+    AUTORESEARCH_SINGLE_LANE_PROMPT,
   ),
 
   [AUTORESEARCH_SYNTROPY_LOOP_GRAPH_NAME]: createAutoresearchCatalogEntry(
     "Autoresearch Syntropy Loop",
     "Knowledge-syntropy autoresearch loop with Librarian, Archivist, Curator, Thinker, Flasher, and Judge",
-    AUTORESEARCH_SYNTROPY_LOOP_PROMPT
+    AUTORESEARCH_SYNTROPY_LOOP_PROMPT,
   ),
 
   [AUTORESEARCH_REGISTRY_SWARM_GRAPH_NAME]: createAutoresearchCatalogEntry(
     "Autoresearch Registry Swarm",
     "Registry-aware autoresearch tournament across conservative, retrieval, and topology lanes",
-    AUTORESEARCH_REGISTRY_SWARM_PROMPT
+    AUTORESEARCH_REGISTRY_SWARM_PROMPT,
   ),
 
   /**
@@ -246,6 +249,7 @@ export const LANGGRAPH_PROVIDER_ID = "langgraph" as const;
  * Per GRAPH_ID_NAMESPACED: format is ${providerId}:${graphName}
  */
 export const LANGGRAPH_GRAPH_IDS = {
+  cogni: `${LANGGRAPH_PROVIDER_ID}:cogni`,
   "autoresearch-single-lane": `${LANGGRAPH_PROVIDER_ID}:${AUTORESEARCH_SINGLE_LANE_GRAPH_NAME}`,
   "autoresearch-syntropy-loop": `${LANGGRAPH_PROVIDER_ID}:${AUTORESEARCH_SYNTROPY_LOOP_GRAPH_NAME}`,
   "autoresearch-registry-swarm": `${LANGGRAPH_PROVIDER_ID}:${AUTORESEARCH_REGISTRY_SWARM_GRAPH_NAME}`,

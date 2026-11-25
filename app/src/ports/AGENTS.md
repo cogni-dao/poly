@@ -54,6 +54,7 @@ Does NOT re-export packages with `node:` transitive dependencies.
 - ThreadPersistencePort, ThreadConflictError, ThreadSummary
 - OperatorWalletPort
 - PolyWalletResetStatePort (RLS-scoped reset preconditions + target quiesce)
+- `node-admin.port.ts`: opaque `AdminSession` and `NodeAdminPort` for AI permission acts only; the sole mint is `(admin)/_lib/admin-session.ts`
 - IdentityBindingRepositoryPort, IdentityBindingTransactionPort
 - TreasurySettlementPort, TreasurySettlementOutcome
 - Types (ChargeReceiptParams, LlmCaller, BillingAccount, CreditLedgerEntry, etc.)

@@ -89,6 +89,9 @@ pnpm --filter @cogni/db-schema build
 
 ## Notes
 
+- `src/agent-authority.ts` declares node-owned principal and grant tables for the released grants store. Conditional legacy adoption, FORCE RLS and identity bootstrap live in the paired generated migrations; no capabilities are seeded.
+- Last reviewed: 2026-11-21 (story.0090 authority schema adoption).
+
 - Subpath exports enable tree-shaking: consumers import only needed slices
 - `refs.ts` defines FK target tables shared across all slices
 - Schedule tables support Temporal migration (execution_requests for idempotency)

@@ -63,6 +63,7 @@ Single source of truth for environment variables. Lazy validation with Zod preve
 
 Unified serverEnv() provides all vars:
 
+- COGNI_CODING_ACTOR_IDS (comma-separated authenticated UUIDs, default empty)
 - NODE_ENV (development|test|production, default development)
 - APP_ENV (test|production)
 - SERVICE_NAME (default: "app") - for observability service label

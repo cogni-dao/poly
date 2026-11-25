@@ -51,7 +51,10 @@ import {
   POLY_BRAIN_GRAPH_NAME,
   POLY_LANGGRAPH_CATALOG,
 } from "@cogni/poly-graphs";
-import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
+import {
+  WORK_ITEM_ARTIFACT_RECORD_NAME,
+  WORK_ITEM_UPDATE_NAME,
+} from "@cogni/shared-ai-tools";
 
 import type { LangGraphCatalog } from "@/adapters/server/ai/langgraph/catalog";
 
@@ -84,7 +87,10 @@ export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
  */
 const SHARED_WORK_PRIORITIZER = POLY_LANGGRAPH_CATALOG["work-prioritizer"]!;
 export const POLY_WORK_PRIORITIZER_NODE_TOOL_IDS: readonly string[] =
-  SHARED_WORK_PRIORITIZER.toolIds.filter((id) => id !== WORK_ITEM_UPDATE_NAME);
+  SHARED_WORK_PRIORITIZER.toolIds.filter(
+    // langgraph-graphs 0.11 also offers the artifact-record write; keep the prioritizer read-only.
+    (id) => id !== WORK_ITEM_UPDATE_NAME && id !== WORK_ITEM_ARTIFACT_RECORD_NAME
+  );
 
 /** Appended to the shared decide prompt, which otherwise requires writes and calls NO_CHANGE a failure. */
 export const POLY_WORK_PRIORITIZER_READ_ONLY_NOTE =

@@ -140,7 +140,14 @@ import {
 	getTestOnChainVerifier,
 	getTestOperatorWallet,
 } from "@/adapters/test";
+import {
+	type AgentAuthoritySql,
+	createSharedAgentAuthority,
+} from "@/bootstrap/agent-authority";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
+import { createNodeAdminPort } from "@/bootstrap/node-admin-port";
+import type { NodeAdminPort } from "@/ports/node-admin.port";
 import {
 	startGovernanceSyncOnBoot,
 	startMetricsSyncOnBoot,
@@ -292,6 +299,10 @@ export interface Container {
 	repoCapability: RepoCapability;
 	/** Tool source with real implementations for AI tool execution */
 	toolSource: ToolSourcePort;
+	sharedScheduleCapability: import("@cogni/ai-tools").ScheduleCapability;
+	/** AI-access composition only; existing legacy admin surfaces keep their guards. */
+	agentAuthority: ReturnType<typeof createSharedAgentAuthority>;
+	nodeAdminPort: NodeAdminPort;
 	/** External-agent knowledge contribution service — undefined when DOLTGRES_URL is unset */
 	knowledgeContributionService: ContributionService | undefined;
 	/** Direct knowledge store port — exposed for the cookie-only browse endpoint. Undefined when DOLTGRES_URL is unset. */
@@ -2435,6 +2446,18 @@ function createContainer(): Container {
 	// RepoCapability for AI tools (requires COGNI_REPO_PATH)
 	const repoCapability = createRepoCapability(env);
 
+	// Internal AI permissions (/admin/ai-access): repo-spec admin wallets are the one node-admin authority.
+	const nodeAdmin = createApproversNodeAdminAuthority();
+	const agentAuthority = createSharedAgentAuthority(
+		serviceDb.$client as unknown as AgentAuthoritySql,
+		nodeAdmin,
+		log,
+	);
+	const nodeAdminPort = createNodeAdminPort(
+		agentAuthority.guardDeps.withStore,
+		log,
+	);
+
 	// Deployed work items are Dolt-backed. When the hub is unavailable, fail
 	// closed instead of silently writing ephemeral markdown inside the pod.
 	let workItemAdapter: RuntimeWorkItemAdapter =
@@ -2798,6 +2821,9 @@ function createContainer(): Container {
 		webSearchCapability,
 		repoCapability,
 		toolSource,
+		sharedScheduleCapability: scheduleCapability,
+		agentAuthority,
+		nodeAdminPort,
 		knowledgeContributionService,
 		knowledgeStorePort,
 		edoCapability,

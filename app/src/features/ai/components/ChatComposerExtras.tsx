@@ -37,6 +37,11 @@ import {
  */
 const AVAILABLE_GRAPHS: readonly GraphOption[] = [
   {
+    graphId: "langgraph:cogni" satisfies GraphId,
+    name: "Cogni",
+    description: "Coordinates node duties and answers questions",
+  },
+  {
     graphId: "langgraph:poly-brain" satisfies GraphId,
     name: "Poly Brain",
     description: "Prediction market analyst with live market data",
@@ -115,10 +120,10 @@ export function ChatComposerExtras({
         setLocalModel(validated);
         // Find the matching ref from API models (defaults to platform provider)
         const matchedModel = modelsQuery.data.models.find(
-          (m) => m.ref.modelId === validated
+          (m) => m.ref.modelId === validated,
         );
         onModelChange(
-          matchedModel?.ref ?? { providerKey: "platform", modelId: validated }
+          matchedModel?.ref ?? { providerKey: "platform", modelId: validated },
         );
       }
     }
