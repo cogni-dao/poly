@@ -16,7 +16,7 @@
  * @internal
  */
 
-import { WorkItemMovesInputSchema } from "@cogni/work-items";
+import { SpecRefsInputSchema, WorkItemMovesInputSchema } from "@cogni/work-items";
 import { z } from "zod";
 
 import { WorkItemDtoSchema, WorkItemScoresInputSchema } from "./work.items.list.v1.contract";
@@ -66,7 +66,8 @@ export const workItemsCreateOperation = {
     // story.0033: a new item names the metrics it moves when it is filed. The server pins each baseline.
     moves: WorkItemMovesInputSchema.optional(),
     labels: z.array(z.string()).optional(),
-    specRefs: z.array(z.string()).optional(),
+    // story.0069: the design atoms the item is built against, each knowledge:<atom-id>.
+    specRefs: SpecRefsInputSchema.optional(),
     assignees: z.array(SubjectRefSchema).optional(),
   }),
   output: WorkItemDtoSchema,

@@ -9,6 +9,7 @@
     "packages:build": "pnpm build:packages",
     "build:app": "pnpm --filter @cogni/node-template-app build",
     "check:workflow": "node scripts/check-node-ci-workflow.mjs && node scripts/check-node-ci-workflow.test.mjs",
+    "check:design-tokens": "pnpm --filter @cogni/node-template-app exec ui-theme-check src/styles/tailwind.css",
     "check:declarations": "node scripts/check-node-declarations.mjs",
     "check:markdown-refs": "node scripts/check-markdown-refs.mjs",
     "conductor:setup": "bash scripts/conductor-worktree-setup.sh",
@@ -52,8 +53,8 @@
     "yaml": "^2.8.3"
   },
   "dependencies": {
-    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.18.0/cogni-dao-knowledge-store-0.18.0.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.21.0/cogni-dao-knowledge-store-0.21.0.tgz",
     "@cogni/ai-tools": "workspace:*",
-    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.14.0/cogni-dao-work-items-0.14.0.tgz"
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz"
   }
 }
