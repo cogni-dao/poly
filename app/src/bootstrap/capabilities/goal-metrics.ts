@@ -15,6 +15,7 @@ import {
   createGoalProgressReader,
   createGoalSource,
 } from "@cogni-dao/metrics/knowledge";
+import { createKnowledgeUsageCalculator } from "@cogni-dao/metrics/usage";
 import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
 import { createMetricTools } from "@cogni/shared-ai-tools";
 import type { Sql } from "postgres";
@@ -34,7 +35,10 @@ export function createGoalMetrics(deps: {
     node: getNodeId(),
     // Node-owned families only (never a reserved package family). Each reads a
     // source this node owns or public data; none reads private connection data.
-    nodeCalculators: [createWalletPnlCalculator()],
+    nodeCalculators: [
+      createWalletPnlCalculator(),
+      createKnowledgeUsageCalculator(deps.observationsSql),
+    ],
   });
 }
 
