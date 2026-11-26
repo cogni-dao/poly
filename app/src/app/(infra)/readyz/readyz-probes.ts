@@ -159,7 +159,8 @@ type SubstrateName =
   | "tigerbeetle"
   | "langfuse"
   | "openbao-eso"
-  | "openfga";
+  | "openfga"
+  | "sandbox";
 
 type ProbeRun = (
   ctx: RequestContext,
@@ -305,6 +306,16 @@ export const SUBSTRATE_DEPENDENCIES: readonly SubstrateDependency[] = [
     isDeclared: () => false,
     readyz: { kind: "na", reason: "Not wired on Poly." },
   },
+  {
+    dependency: "sandbox",
+    envKeys: ["SANDBOX_BASE_URL"],
+    isDeclared: (env) => Boolean(env.SANDBOX_EXECD_TOKEN),
+    readyz: {
+      kind: "na",
+      reason:
+        "Per-run remote workspace companion reached on demand by sandbox tools; its origin is derived from APP_BASE_URL, so it is not a serving dependency.",
+    },
+  },
 ];
 
 /**
@@ -332,6 +343,8 @@ export const NON_SUBSTRATE_ALLOWLIST: readonly string[] = [
   "DOLTHUB_REMOTE_URL",
   "PROMETHEUS_REMOTE_WRITE_URL",
   "PROMETHEUS_QUERY_URL",
+  // The operator that mints sandbox push tokens. Not a readiness dependency: an outage only stops git push.
+  "COGNI_OPERATOR_URL",
 ];
 
 /**
