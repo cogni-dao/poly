@@ -1,13 +1,24 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
-import { EVENT_NAMES, logEvent } from "@/shared/observability";
+/**
+ * Module: `@app/api/v1/work/items/[id]/expectations/route`
+ * Purpose: GET one work item's EDO expectations and their pinned predictions for the shared item view.
+ * Scope: Auth, the item and EDO reads, and the log line. `handleWorkExpectations` from @cogni-dao/metrics/http owns the matching,
+ *   the one prediction batch, the page and the terminal event (story.0085).
+ * Side-effects: IO (Doltgres reads, metric reads, HTTP response)
+ * Links: hub work-item-view-capability
+ * @public
+ */
+
+import { handleWorkExpectations } from "@cogni-dao/metrics/http";
 import { NextResponse } from "next/server";
+
 import { getWorkItem } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,92 +27,27 @@ export const GET = wrapRouteHandlerWithLogging<{ params: Promise<{ id: string }>
   { routeId: "work.expectations.get", auth: { mode: "required", getSessionUser } },
   async (ctx, request, user, context) => {
     const started = Date.now();
-    const reply = (body: unknown, status: number, errorCode?: string) => {
-      logEvent(ctx.log, EVENT_NAMES.WORK_EXPECTATIONS_READ, { reqId: ctx.reqId, routeId: ctx.routeId, status, durationMs: Date.now()-started, outcome: status < 400 && !errorCode ? "success" : "error", ...(errorCode ? {errorCode} : {}) });
-      return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
-    };
-    try {
-    if (!user) return reply({ error: "unauthorized" }, 401, "unauthorized");
+    const headers = { "Cache-Control": "no-store" };
     if (!context) throw new Error("context required");
+    if (!user) {
+      logEvent(ctx.log, EVENT_NAMES.WORK_EXPECTATIONS_READ, { reqId: ctx.reqId, routeId: ctx.routeId, status: 401, durationMs: Date.now() - started, outcome: "error", errorCode: "unauthorized" });
+      return NextResponse.json({ error: "unauthorized" }, { status: 401, headers });
+    }
     const { id } = await context.params;
     const container = getContainer();
-    if (!container.knowledgeStorePort?.readWorkEdo)
-      return reply({ error: "unavailable" }, 503, "unavailable");
-    const [itemResult, pageResult] = await Promise.allSettled([
-      getWorkItem(id, { signal: request.signal, chain: false }),
-      container.knowledgeStorePort.readWorkEdo(id, request.signal),
-    ]);
-    if (itemResult.status !== "fulfilled" || pageResult.status !== "fulfilled")
-      return reply({ error: "unavailable" }, 503, "unavailable");
-    const item = itemResult.value,
-      page = pageResult.value;
-    if (!item) return reply({ error: "not found" }, 404, "not_found");
-    const entries = page.items.map(({ hypothesis, outcomes, truncated }) => ({
-      hypothesis,
-      outcomes,
-      truncated,
-      parsed: KpiBindingsSchema.safeParse(hypothesis.kpiBindings ?? []),
-    }));
-    const matched = entries.flatMap((entry) =>
-      entry.parsed.success
-        ? entry.parsed.data.filter((binding) =>
-            item.moves?.some(
-              (move) =>
-                move.metricId === binding.metricId &&
-                move.baselineObservationId !== null &&
-                move.baselineObservationId === binding.baselineObservationId,
-            ),
-          )
-        : [],
-    );
-    let evidenceUnavailable = matched.length > 0 && !container.goalMetrics;
-    const assessments =
-      container.goalMetrics && matched.length
-        ? await container.goalMetrics.predictionBatch(matched, request.signal).catch(() => {
-            evidenceUnavailable = true;
-            return [];
-          })
-        : [];
-    if (assessments.length !== matched.length) evidenceUnavailable = true;
-    let cursor = 0;
-    const items = entries.map(({ hypothesis, outcomes, truncated, parsed }) => ({
-      id: hypothesis.id,
-      title: hypothesis.title,
-      content: hypothesis.content,
-      outcomes,
-      truncated,
-      predictions: parsed.success
-        ? parsed.data.map((binding) => {
-            const same = item.moves?.some(
-              (move) =>
-                move.metricId === binding.metricId &&
-                move.baselineObservationId !== null &&
-                move.baselineObservationId === binding.baselineObservationId,
-            );
-            const result = same ? assessments[cursor++] : undefined;
-            const assessment = result?.assessment;
-            if (same && (!assessment || result?.viewState === "error" || assessment.reason === "metric_authority_unavailable")) evidenceUnavailable = true;
-            const observed = assessment
-              ? [
-                  assessment.status,
-                  assessment.value == null ? null : `${assessment.value} ${assessment.unit}`,
-                  assessment.observationId,
-                  assessment.reason,
-                  assessment.deadline,
-                  result?.viewState,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-              : "unavailable (metrics_unavailable)";
-            return {
-              metricId: binding.metricId,
-              expected: `${binding.comparator} ${binding.target.value} ${binding.target.unit}`,
-              observed: same ? observed : "unresolved (metric or baseline mismatch)",
-            };
-          })
-        : [{ metricId: "", expected: "invalid binding", observed: "unresolved" }],
-    }));
-    return reply({ items, truncated: page.truncated }, 200, evidenceUnavailable ? "metrics_unavailable" : undefined);
-    } catch { return reply({error:"unavailable"},503,"unavailable"); }
+    const readWorkEdo = container.knowledgeStorePort?.readWorkEdo?.bind(container.knowledgeStorePort);
+    const result = await handleWorkExpectations({
+      workItemId: id,
+      readItem: (signal) => getWorkItem(id, { ...(signal && { signal }), chain: false, artifacts: false }),
+      readEdo: readWorkEdo && ((signal) => readWorkEdo(id, signal)),
+      predictionBatch: container.goalMetrics?.predictionBatch.bind(container.goalMetrics),
+      signal: request.signal,
+    }).catch(() => undefined);
+    if (!result) {
+      logEvent(ctx.log, EVENT_NAMES.WORK_EXPECTATIONS_READ, { reqId: ctx.reqId, routeId: ctx.routeId, status: 503, durationMs: Date.now() - started, outcome: "error", errorCode: "unavailable" });
+      return NextResponse.json({ error: "unavailable" }, { status: 503, headers });
+    }
+    logEvent(ctx.log, EVENT_NAMES.WORK_EXPECTATIONS_READ, { reqId: ctx.reqId, durationMs: Date.now() - started, ...result.event });
+    return NextResponse.json(result.body, { status: result.status, headers });
   },
 );

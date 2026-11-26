@@ -14,14 +14,17 @@
 import type {
   CiteRef,
   HistoryEntry,
+  HistoryPage,
   WorkBoardColumnPages,
   WorkItem,
   WorkItemCommandPort,
+  WorkItemArtifactStore,
   WorkItemId,
   WorkItemSummary,
   WorkItemWriterHealth,
   WorkQuery,
   WorkSummaryReadOptions,
+  WriteAttribution,
 } from "@cogni/work-items";
 
 export type WorkItemsCreateInput = Parameters<WorkItemCommandPort["create"]>[0];
@@ -68,11 +71,19 @@ export interface WorkItemsDoltgresPort {
     perColumn: number,
     options?: { readonly signal?: AbortSignal },
   ): Promise<WorkBoardColumnPages>;
-  create(input: WorkItemsCreateInput, principalId: string): Promise<WorkItem>;
-  patch(input: WorkItemsPatchInput, principalId: string): Promise<WorkItem>;
+  /** `attribution` is the host-built record of who wrote, for whom and in which run (task.0133). */
+  create(input: WorkItemsCreateInput, attribution: WriteAttribution): Promise<WorkItem>;
+  patch(input: WorkItemsPatchInput, attribution: WriteAttribution): Promise<WorkItem>;
   delete(id: WorkItemId, principalId: string): Promise<boolean>;
   /** Versions of one item, newest first, with their change reasons (task.0052). */
   history?(id: WorkItemId): Promise<HistoryEntry[]>;
+  /** One page of versions, newest first (story.0058): the history refs the item read carries. */
+  historyPage?(
+    id: WorkItemId,
+    options: { readonly cursor?: string | undefined; readonly limit: number },
+  ): Promise<HistoryPage>;
+  /** Insert-only review and validation artifacts (task.0028); the table is `work_item_artifacts`. */
+  readonly artifacts?: WorkItemArtifactStore;
   /** In-memory writer state for deep readiness; makes no database call (bug.0042). */
   writerHealth?(): WorkItemWriterHealth;
   claim(input: {

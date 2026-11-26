@@ -57,7 +57,7 @@ import {
 import type { RunCardData } from "@/components/kit/data-display/RunCard";
 import { cn } from "@/shared/util/cn";
 import { fetchActivity } from "../activity/_api/fetchActivity";
-import { fetchWorkItem } from "../work/_api/fetchWorkItems";
+import { workItemClient } from "../work/_api/fetchWorkItems";
 import { NODE_GOALS_HOST } from "../_components/goals-host";
 import { WorkItemDetail } from "../work/_components/WorkItemDetail";
 import { StatusPill, TypeIcon } from "../work/_components/work-item-icons";
@@ -227,7 +227,7 @@ export function DashboardView(): ReactElement {
   const selectedWorkItem = useQuery({
     queryKey: ["work-item", selectedWorkItemId],
     queryFn: ({ signal }) =>
-      fetchWorkItem(selectedWorkItemId as string, signal),
+      workItemClient.fetchItem(selectedWorkItemId as string, {}, signal),
     enabled: selectedWorkItemId !== null,
     retry: false,
     staleTime: 30_000,

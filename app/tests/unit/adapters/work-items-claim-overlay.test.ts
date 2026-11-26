@@ -116,9 +116,9 @@ describe("DoltgresPolyWorkItemAdapter claim overlay (task.0056)", () => {
       set: { title: "t" },
     } as never;
 
-    await adapter.patch(input, "agent-1");
+    await adapter.patch(input, { actor: "agent-1" });
 
-    expect(content.patch).toHaveBeenCalledWith(input, "agent-1");
+    expect(content.patch).toHaveBeenCalledWith(input, { actor: "agent-1" });
     expect(legacy.patch).not.toHaveBeenCalled();
   });
 });

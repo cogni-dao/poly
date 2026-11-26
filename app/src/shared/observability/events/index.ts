@@ -55,6 +55,13 @@ export const EVENT_NAMES = {
 	WORK_ITEMS_CREATE_REFUSED: "work.items.create_refused",
 	WORK_ITEMS_PATCH_SUCCESS: "work.items.patch_success",
 	WORK_ITEMS_PATCH_REFUSED: "work.items.patch_refused",
+	// The single-item read (story.0085): one terminal event per GET from the package route core; ids, parts and codes only. The names repeat WORK_ITEM_READ_EVENTS.
+	WORK_ITEMS_GET_SUCCESS: "work.items.get_success",
+	WORK_ITEMS_GET_REFUSED: "work.items.get_refused",
+	// Artifacts (task.0028): one terminal event per artifacts call, codes and counts only.
+	WORK_ITEMS_ARTIFACT_RECORDED: "work.items.artifact_recorded",
+	WORK_ITEMS_ARTIFACT_REFUSED: "work.items.artifact_refused",
+	WORK_ITEMS_ARTIFACTS_READ: "work.items.artifacts_read",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,

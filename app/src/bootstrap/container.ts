@@ -22,12 +22,15 @@ import {
 	type UsageLogEvent,
 } from "@cogni-dao/metrics/usage";
 import type {
-	EdoCapability,
 	KnowledgeCapability,
 	MetricsCapability,
 	RepoCapability,
 	WebSearchCapability,
 } from "@cogni/ai-tools";
+import {
+	bindEdoToolCapability,
+	runAttribution,
+} from "@/bootstrap/write-attribution";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
@@ -59,6 +62,7 @@ import {
 	createContributionService,
 	createEdoCapability,
 	createKnowledgeCapability,
+	type EdoCapability,
 	defaultCanMergeKnowledge,
 	type KnowledgeStorePort,
 	shapeGate,
@@ -84,7 +88,11 @@ import { numberToPpm } from "@cogni/operator-wallet";
 import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/privy";
 import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
-import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
+import type {
+	WorkItemArtifactDeps,
+	WorkItemCommandPort,
+	WorkItemQueryPort,
+} from "@cogni/work-items";
 import {
 	Client as TemporalClient,
 	Connection as TemporalConnection,
@@ -328,6 +336,8 @@ export interface Container {
 	knowledgeReadCounter: KnowledgeReadCounter;
 	/** Extended CRUD surface used by the authenticated work-item HTTP API. */
 	doltgresWorkItems: WorkItemsDoltgresPort;
+	/** Review and validation artifacts of work items (task.0028): the item store and the insert-only artifact store. Undefined when DOLTGRES_URL is unset. */
+	workItemArtifacts: WorkItemArtifactDeps | undefined;
 	/** Run event streaming — publish/subscribe via Redis Streams */
 	runStream: RunStreamPort;
 	/** Node-level event streaming — undefined when REDIS_URL not set */
@@ -2476,6 +2486,7 @@ function createContainer(): Container {
 	// closed instead of silently writing ephemeral markdown inside the pod.
 	let workItemAdapter: RuntimeWorkItemAdapter =
 		createUnavailableWorkItemAdapter();
+	let workItemArtifacts: WorkItemArtifactDeps | undefined;
 	const workItemCommand = createUnavailableWorkItemCommand();
 
 	// ScheduleCapability for AI tools (reads actorUserId from ALS at invocation time)
@@ -2549,6 +2560,15 @@ function createContainer(): Container {
 				},
 			}) as RuntimeWorkItemAdapter;
 		}
+		// task.0028: artifacts go through the work-items writer path; the adapter owns the store. A story validation
+		// names its origin; only this hub's own is accepted.
+		workItemArtifacts = workItemAdapter.artifacts
+			? {
+					items: workItemAdapter,
+					artifacts: workItemAdapter.artifacts,
+					ownOrigin: env.APP_BASE_URL,
+				}
+			: undefined;
 		const createKnowledgeBranchClient = () => buildDoltgresClient({
 			connectionString: doltgresUrl,
 			applicationName: `cogni_knowledge_branch_${env.SERVICE_NAME ?? "app"}`,
@@ -2679,11 +2699,7 @@ function createContainer(): Container {
 		log: (event) => log.warn(event, "work.items.envelope_degraded"),
 		backlogWriter: {
 			store: workItemAdapter,
-			principalId: () => {
-				const actor = getExecutionScope().actorUserId;
-				if (!actor) throw new Error("Authenticated work-item actor required");
-				return actor;
-			},
+			attribution: () => runAttribution(),
 		},
 	});
 
@@ -2691,7 +2707,7 @@ function createContainer(): Container {
 	const toolBindings = createToolBindings({
 		nodePublicOrigin: env.APP_BASE_URL,
 		knowledgeCapability,
-		edoCapability,
+		edoCapability: bindEdoToolCapability(edoCapability),
 		metricsCapability,
 		webSearchCapability,
 		repoCapability,
@@ -2885,6 +2901,7 @@ function createContainer(): Container {
 		workItemCommand,
 		knowledgeReadCounter,
 		doltgresWorkItems: workItemAdapter,
+		workItemArtifacts,
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {

@@ -3,20 +3,19 @@
 
 /**
  * Module: `@app/(app)/work/_api/fetchWorkItems`
- * Purpose: Client-side fetch wrappers for bounded work summary pages, the work board, and item detail.
- * Scope: Calls the summary, board and detail endpoints with type-safe contracts. Does not implement business logic.
+ * Purpose: Client-side fetch wrappers for bounded work summary pages and the work board, and the one item-view read client
+ *   (`workItemClient`, from the package, story.0085) that every host reads the item through.
+ * Scope: Calls the summary and board endpoints with type-safe contracts. Does not implement business logic.
  * Invariants:
- *   - Returns typed summary pages, board columns or details, or throws `WorkItemFetchError` carrying the HTTP status (the package hooks retry only 5xx and network failures)
+ *   - Returns typed summary pages or board columns, or throws `WorkItemFetchError` carrying the HTTP status (the package hooks retry only 5xx and network failures)
  *   - BOUNDED_BOARD_READS: the only list reads are one `/work/summaries` page and one `/work/board` request; nothing here walks cursors (task.0056)
  * Side-effects: IO
  * Links: [work.items.list.v1.contract](../../../../contracts/work.items.list.v1.contract.ts)
  * @internal
  */
 
-import type {
-  WorkItemDto,
-  WorkItemSummariesListOutput,
-} from "@cogni/node-contracts";
+import { createWorkItemClient } from "@cogni/knowledge-base-ui/work-item";
+import type { WorkItemSummariesListOutput } from "@cogni/node-contracts";
 import type { WorkBoardColumns } from "@cogni/work-items";
 
 export class WorkItemFetchError extends Error {
@@ -27,12 +26,6 @@ export class WorkItemFetchError extends Error {
     this.name = "WorkItemFetchError";
     this.status = status;
   }
-}
-
-export function isWorkItemNotFoundError(
-  error: unknown
-): error is WorkItemFetchError {
-  return error instanceof WorkItemFetchError && error.status === 404;
 }
 
 async function responseErrorMessage(
@@ -82,23 +75,8 @@ export function fetchWorkBoard(
   return getJson(`/api/v1/work/board?${params}`, signal);
 }
 
-export async function fetchWorkItem(
-  id: string,
-  signal?: AbortSignal
-): Promise<WorkItemDto> {
-  const response = await fetch(`/api/v1/work/items/${encodeURIComponent(id)}`, {
-    method: "GET",
-    ...(signal && { signal }),
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    const message = await responseErrorMessage(
-      response,
-      `Failed to fetch work item (HTTP ${response.status})`
-    );
-    throw new WorkItemFetchError(message, response.status);
-  }
-  return response.json() as Promise<WorkItemDto>;
-}
+/**
+ * The item read for the item view (story.0085): the package client, every part the view draws (`WORK_ITEM_VIEW_INCLUDES`),
+ * parsed with the work-items schema. A failed read throws `WorkItemReadError` with the HTTP `status`.
+ */
+export const workItemClient = createWorkItemClient();
