@@ -40,7 +40,7 @@ function schedule(ownerUserId = TEST_SESSION_USER_1.id) {
   return {
     id: scheduleId,
     ownerUserId,
-    graphId: "langgraph:brain",
+    graphId: "langgraph:cogni",
     input: {},
     cron: "0 9 * * *",
     timezone: "UTC",

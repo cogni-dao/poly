@@ -14,7 +14,10 @@
  * @public
  */
 
-import type { CatalogBoundTool as SharedCatalogBoundTool } from "@cogni/shared-ai-tools";
+import {
+  CORE_TOOL_BUNDLE as SHARED_CORE_TOOL_BUNDLE,
+  type CatalogBoundTool as SharedCatalogBoundTool,
+} from "@cogni/shared-ai-tools";
 import { edoDecideBoundTool } from "./tools/edo-decide";
 import { edoHypothesizeBoundTool } from "./tools/edo-hypothesize";
 import { edoRecordOutcomeBoundTool } from "./tools/edo-record-outcome";
@@ -36,7 +39,6 @@ import { vcsMergePrBoundTool } from "./tools/vcs-merge-pr";
 import { webSearchBoundTool } from "./tools/web-search";
 import { workItemQueryBoundTool } from "./tools/work-item-query";
 import { workItemReadBoundTool } from "./tools/work-item-read";
-import { workItemTransitionBoundTool } from "./tools/work-item-transition";
 import type { BoundTool } from "./types";
 
 /**
@@ -104,6 +106,15 @@ export function createToolCatalog(
  * Adding a node-only tool (e.g. poly-only): add it to that node's
  * `nodes/<node>/packages/ai-tools/` package instead — never here.
  */
+// The release catalog already erases concrete schemas at its typed boundary: reuse its entries.
+function sharedTool(id: string): CatalogBoundTool {
+  const tool = SHARED_CORE_TOOL_BUNDLE.find(
+    (entry) => entry.contract.name === id,
+  );
+  if (!tool) throw new Error(`Shared baseline tool missing: ${id}`);
+  return tool as CatalogBoundTool;
+}
+
 export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   edoDecideBoundTool as CatalogBoundTool,
   edoHypothesizeBoundTool as CatalogBoundTool,
@@ -116,6 +127,8 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   repoListBoundTool as CatalogBoundTool,
   repoOpenBoundTool as CatalogBoundTool,
   repoSearchBoundTool as CatalogBoundTool,
+  // The node AI's shell: the released shared tool (sandbox:exec); bound in bootstrap.
+  sharedTool("core__sandbox_shell"),
   scheduleListBoundTool as CatalogBoundTool,
   scheduleManageBoundTool as CatalogBoundTool,
   vcsCreateBranchBoundTool as CatalogBoundTool,
@@ -126,7 +139,6 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   webSearchBoundTool as CatalogBoundTool,
   workItemQueryBoundTool as CatalogBoundTool,
   workItemReadBoundTool as CatalogBoundTool,
-  workItemTransitionBoundTool as CatalogBoundTool,
 ];
 
 /**

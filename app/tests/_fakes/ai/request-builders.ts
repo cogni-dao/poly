@@ -19,7 +19,7 @@ import { TEST_MODEL_ID } from "./test-constants";
  * Default graph name for test requests.
  * Per GRAPH_ID_NAMESPACED: format is ${providerId}:${graphName}
  */
-export const TEST_GRAPH_NAME = "langgraph:poet";
+export const TEST_GRAPH_NAME = "langgraph:cogni";
 
 /**
  * Options for OpenAI-compatible completion request builder.

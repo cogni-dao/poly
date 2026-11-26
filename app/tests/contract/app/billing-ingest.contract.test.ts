@@ -118,7 +118,7 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
     metadata: {
       spend_logs_metadata: {
         run_id: "run-abc",
-        graph_id: "langgraph:poet",
+        graph_id: "langgraph:cogni",
         attempt: 0,
       },
       requester_custom_headers: {},

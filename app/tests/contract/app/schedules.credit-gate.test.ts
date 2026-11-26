@@ -65,7 +65,7 @@ import { getSessionUser } from "@/app/_lib/auth/session";
 import * as appHandler from "@/app/api/v1/schedules/route";
 
 const VALID_SCHEDULE_BODY = {
-  graphId: "langgraph:poet",
+  graphId: "langgraph:cogni",
   input: { messages: [{ role: "user", content: "Hello" }], model: "gpt-4o" },
   cron: "0 9 * * *",
   timezone: "UTC",
@@ -73,7 +73,7 @@ const VALID_SCHEDULE_BODY = {
 
 const CREATED_SCHEDULE = {
   id: "123e4567-e89b-12d3-a456-426614174000",
-  graphId: "langgraph:poet",
+  graphId: "langgraph:cogni",
   input: VALID_SCHEDULE_BODY.input,
   cron: "0 9 * * *",
   timezone: "UTC",

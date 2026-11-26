@@ -25,7 +25,7 @@ import { POST } from "@/app/api/internal/graphs/[graphId]/runs/route";
 import { executionGrants, llmChargeDetails, users } from "@/shared/db/schema";
 
 const SCHEDULER_TOKEN = process.env.SCHEDULER_API_TOKEN ?? "";
-const TEST_GRAPH_ID = "langgraph:poet";
+const TEST_GRAPH_ID = "langgraph:cogni";
 
 describe("[internal] billing via UsageCommitDecorator (bug.0005 regression)", () => {
   let testActor: TestActor;

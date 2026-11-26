@@ -167,7 +167,7 @@ describe("POST /api/v1/ai/chat - Paid Model Zero Credits", () => {
           body: JSON.stringify({
             message: "Hello",
             modelRef: { providerKey: "platform", modelId: "paid-model" },
-            graphName: "langgraph:poet",
+            graphName: "langgraph:cogni",
           }),
         });
 

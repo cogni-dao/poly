@@ -49,7 +49,7 @@ function makeCallbackPayload(
       metadata: {
         spend_logs_metadata: {
           run_id: runId,
-          graph_id: "langgraph:poet",
+          graph_id: "langgraph:cogni",
           attempt: 0,
         },
         requester_custom_headers: {},
@@ -124,7 +124,7 @@ describe("[internal] POST /api/internal/billing/ingest", () => {
     expect(details).toHaveLength(1);
     const [detail] = details;
     expect(detail?.model).toBe("gemini-2.5-flash");
-    expect(detail?.graphId).toBe("langgraph:poet");
+    expect(detail?.graphId).toBe("langgraph:cogni");
   });
 
   it("duplicate callback is idempotent (no duplicate receipt)", async () => {

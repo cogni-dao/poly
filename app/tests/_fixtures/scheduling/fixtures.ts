@@ -38,7 +38,7 @@ export function createSchedulePayload(overrides?: {
   timezone?: string;
 }) {
   return {
-    graphId: overrides?.graphId ?? "langgraph:poet",
+    graphId: overrides?.graphId ?? "langgraph:cogni",
     input: overrides?.input ?? {
       messages: [{ role: "user", content: "Hello" }],
       modelRef: { providerKey: "platform", modelId: "test-model" },
@@ -105,19 +105,19 @@ export function expectedScheduleResponse(
  */
 export const INVALID_PAYLOADS = {
   emptyCron: {
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     input: {},
     cron: "",
     timezone: "UTC",
   },
   invalidCron: {
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     input: {},
     cron: "not-a-cron",
     timezone: "UTC",
   },
   invalidTimezone: {
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     input: {},
     cron: "0 9 * * *",
     timezone: "Fake/Zone",
