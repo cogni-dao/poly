@@ -427,7 +427,15 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
     const runId = req.runId;
     const requestId = ctx?.requestId ?? runId;
     const actor = ctx?.actorUserId;
-    const entry = SHARED_NODE_CATALOG.cogni;
+    // Identity, program, tools and factory come from the released entry; the system prompt comes from THIS node's catalog entry,
+    // whose coordinator workflow list names only what this node runs (packages/langgraph-graphs/src/catalog.ts).
+    const shared = SHARED_NODE_CATALOG.cogni;
+    const entry = {
+      ...shared,
+      systemPrompt:
+        (this.catalog.cogni as { systemPrompt?: string } | undefined)
+          ?.systemPrompt ?? shared.systemPrompt,
+    };
     const deps = this.sharedCogni;
     const shell = "core__sandbox_shell";
     const execute = async () => {
