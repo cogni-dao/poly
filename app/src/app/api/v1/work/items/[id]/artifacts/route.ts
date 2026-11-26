@@ -21,13 +21,13 @@ import {
   artifactsNotConfigured,
   listWorkItemArtifacts,
   recordWorkItemArtifact,
+  routeAttribution,
 } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import { routeAttribution } from "@/bootstrap/write-attribution";
 
 import { respond } from "./_respond";
 

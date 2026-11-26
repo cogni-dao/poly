@@ -108,7 +108,7 @@
   "dependencies": {
     "drizzle-orm": "^0.44.7",
     "@cogni/agent-grants": "https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.10.0/cogni-dao-agent-grants-0.10.0.tgz",
-    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.20.0/cogni-dao-metrics-0.20.0.tgz"
+    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.27.0/cogni-dao-metrics-0.27.0.tgz"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

@@ -27,10 +27,7 @@ import type {
 	RepoCapability,
 	WebSearchCapability,
 } from "@cogni/ai-tools";
-import {
-	bindEdoToolCapability,
-	runAttribution,
-} from "@/bootstrap/write-attribution";
+import { runAttribution } from "@/bootstrap/run-attribution";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
@@ -58,6 +55,7 @@ import { createTigerBeetleAdapter } from "@cogni/financial-ledger/adapters";
 import type { UserId } from "@cogni/ids";
 import { toUserId, userActor } from "@cogni/ids";
 import {
+	bindEdoToolCapability,
 	type ContributionService,
 	createContributionService,
 	createEdoCapability,
@@ -88,10 +86,11 @@ import { numberToPpm } from "@cogni/operator-wallet";
 import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/privy";
 import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
-import type {
-	WorkItemArtifactDeps,
-	WorkItemCommandPort,
-	WorkItemQueryPort,
+import {
+	createWorkItemWriters,
+	type WorkItemArtifactDeps,
+	type WorkItemCommandPort,
+	type WorkItemQueryPort,
 } from "@cogni/work-items";
 import {
 	Client as TemporalClient,
@@ -156,6 +155,7 @@ import {
 	getTestOperatorWallet,
 } from "@/adapters/test";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import { getCurrentTraceId } from "@/bootstrap/otel";
 import { createSandboxShellCapability } from "@/bootstrap/capabilities/sandbox-workspace";
 import {
 	startGovernanceSyncOnBoot,
@@ -2585,6 +2585,7 @@ function createContainer(): Container {
 			knowledgeSql: doltClient,
 			observationsSql: serviceDb.$client,
 			environment: env.DEPLOY_ENVIRONMENT ?? "unknown",
+			metricsQuery,
 			// Compute receipts and skipped invalid definitions must reach Loki.
 			log: (event) => log.info(event, "metric.event"),
 		});
@@ -2618,7 +2619,7 @@ function createContainer(): Container {
 			knowledgeReadCounter,
 			() => {
 				const scope = findExecutionScope();
-				return scope ? { principalId: scope.actorUserId } : undefined;
+				return scope ? { principalId: scope.principalId } : undefined;
 			},
 		);
 		const edoResolver = new DoltgresEdoResolverAdapter({
@@ -2690,6 +2691,14 @@ function createContainer(): Container {
 		log.warn("Knowledge store not configured (DOLTGRES_URL not set)");
 	}
 
+	// ACTING_PRINCIPAL_FOR_WRITES (task.0133): every tool write of the work-item capability is attributed here, and only here: see `createWorkItemWriters` in `@cogni/work-items`.
+	const workItemWriters = createWorkItemWriters({
+		log,
+		scope: getExecutionScope,
+		traceId: getCurrentTraceId,
+		store: () => workItemAdapter,
+		artifacts: () => workItemArtifacts,
+	});
 	const workItemCapability = createWorkItemCapability({
 		workItemQuery: workItemAdapter,
 		workItemCommand,
@@ -2697,17 +2706,15 @@ function createContainer(): Container {
 		// task.0118: first page of an item's citation links, the same read the UI and the route use.
 		links: createCitationLinksPort(() => knowledgeStorePort),
 		log: (event) => log.warn(event, "work.items.envelope_degraded"),
-		backlogWriter: {
-			store: workItemAdapter,
-			attribution: () => runAttribution(),
-		},
+		backlogWriter: workItemWriters.backlogWriter,
 	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
 	const toolBindings = createToolBindings({
 		nodePublicOrigin: env.APP_BASE_URL,
 		knowledgeCapability,
-		edoCapability: bindEdoToolCapability(edoCapability),
+		// ACTING_PRINCIPAL_FOR_WRITES (task.0133): a tool never builds an attribution; the host binds the run's at each call.
+		edoCapability: bindEdoToolCapability(edoCapability, runAttribution),
 		metricsCapability,
 		webSearchCapability,
 		repoCapability,

@@ -11,10 +11,13 @@
  * @internal
  */
 
-import type { ArtifactResult, WriteAttribution } from "@cogni/work-items";
+import {
+  type ArtifactResult,
+  attributionFields,
+  type WriteAttribution,
+} from "@cogni/work-items";
 import { NextResponse } from "next/server";
 
-import { attributionFields } from "@/bootstrap/write-attribution";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 const EVENT_BY_LOG = {

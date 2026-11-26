@@ -62,7 +62,13 @@ export interface WorkItemCapabilityDeps {
   readonly log?: ((event: EnvelopeDegradedEvent) => void) | undefined;
   readonly backlogWriter?: {
     readonly store: Pick<WorkItemsDoltgresPort, "patch">;
+    /** Host-built at invocation: the run's acting principal, its requester and the run (task.0133). */
     readonly attribution: () => WriteAttribution;
+    /** One terminal refusal when the attribution could not be built (a run with no acting principal): nothing was written. */
+    readonly attributionDenied?: (event: {
+      workItemId: string;
+      error: unknown;
+    }) => void;
   };
 }
 
@@ -172,6 +178,14 @@ export function createWorkItemCapability(
     async patch(input): Promise<WorkItemInfo> {
       const writer = deps.backlogWriter;
       if (writer) {
+        let attribution: WriteAttribution;
+        try {
+          attribution = writer.attribution();
+        } catch (error) {
+          // Fail closed, and say so in the same terminal event a refused patch always uses.
+          writer.attributionDenied?.({ workItemId: input.id, error });
+          throw error;
+        }
         try {
           const updated = await writer.store.patch(
             {
@@ -185,7 +199,7 @@ export function createWorkItemCapability(
               reason: input.reason,
               ...(input.cites !== undefined && { cites: input.cites }),
             },
-            writer.attribution(),
+            attribution,
           );
           return toWorkItemInfo(updated);
         } catch (error) {

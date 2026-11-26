@@ -16,7 +16,7 @@ import {
   workItemsCreateOperation,
   workItemsListOperation,
 } from "@cogni/node-contracts";
-import { handleWorkItemCreate } from "@cogni/work-items";
+import { handleWorkItemCreate, routeAttribution } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 import {
   createWorkItem,
@@ -26,7 +26,7 @@ import {
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import { routeAttribution } from "@/bootstrap/write-attribution";
+import { backendUnavailable } from "./_backend-unavailable";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -74,7 +74,7 @@ export const GET = wrapRouteHandlerWithLogging(
         return NextResponse.json({ error: "invalid cursor" }, { status: 400 });
       }
       if (error instanceof WorkItemsBackendNotReadyError) {
-        return NextResponse.json({ error: error.message }, { status: 503 });
+        return backendUnavailable(ctx, error.reason);
       }
       throw error;
     }
@@ -101,12 +101,6 @@ export const POST = wrapRouteHandlerWithLogging(
       attribution,
       toBody: (created) => workItemsCreateOperation.output.parse(created),
       mapNodeError: (e) => {
-        if (e instanceof WorkItemsBackendNotReadyError)
-          return {
-            status: 503,
-            errorCode: "backend_unavailable",
-            body: { error: e.message },
-          };
         return undefined;
       },
     });

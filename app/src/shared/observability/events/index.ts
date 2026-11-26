@@ -62,6 +62,8 @@ export const EVENT_NAMES = {
 	WORK_ITEMS_ARTIFACT_RECORDED: "work.items.artifact_recorded",
 	WORK_ITEMS_ARTIFACT_REFUSED: "work.items.artifact_refused",
 	WORK_ITEMS_ARTIFACTS_READ: "work.items.artifacts_read",
+	// A work-item store answered busy with no terminal event of its own (task.0162): one 503 line with its closed `reason`, never the error text.
+	WORK_ITEMS_BACKEND_UNAVAILABLE: "work.items.backend_unavailable",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,

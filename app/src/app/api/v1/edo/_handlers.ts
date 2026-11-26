@@ -49,9 +49,9 @@ import {
   sessionUserToPrincipal,
 } from "@cogni/knowledge-store";
 import type { SessionUser } from "@cogni/node-shared";
+import { routeAttribution } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 
-import { routeAttribution } from "@/bootstrap/write-attribution";
 import { getContainer } from "@/bootstrap/container";
 
 /**
