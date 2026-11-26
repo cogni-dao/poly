@@ -1,7 +1,14 @@
 -- Poly 0092: the shared agent authority tables (`@cogni-dao/agent-grants/schema`) and the seed of the two internal principals (story.0090).
 -- Provenance: Poly has no earlier agent_principals / agent_roles table (verified: no migration 0000-0091 names either), so this is plain generated DDL
 -- plus the package SQL tail `migrations/agent_authority.sql` (agent-grants 0.10.0), appended verbatim. No existing row is adopted, altered or deleted.
--- Poly's own account-grant plane (`agent_capability_grants`) is untouched; it retires in a later migration with its own review.
+-- Poly's own account-grant plane (`agent_capability_grants` and the 11 delegated policies that read it) is untouched; it retires in a later migration with its own review.
+-- Deliberately NOT here (each joins in the PR that needs it, with its own conformance run):
+--   * the package tail `agent_account_grants.sql` (the `agent_has_scope()` function and the CURRENT_USER select grant): the account columns and the
+--     `agent_roles_account_self_read` policy come with the generated DDL but stay inert until the grant-plane retirement writes Poly's delegated select policies;
+--   * `agent_credentials` and its tail `agent_credentials.sql`, `payer_bindings`, orgs and service-auth: this PR adds no credential route, so
+--     `runCredentialConformance` has nothing to run against; the credentials PR takes that tail and that suite together;
+--   * the AGENT_WALLET_IS_NOT_A_PAYEE trigger and principal backfill (node-template 0043, 0044): they change tables Poly owns and are written with the grant-plane PR.
+-- Gate: app/tests/component/db/agent-authority-migration.int.test.ts (app-role wall, service-role privileges, seed idempotence, legacy plane unchanged, runGrantConformance).
 CREATE TABLE "agent_principals" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"kind" text NOT NULL,
