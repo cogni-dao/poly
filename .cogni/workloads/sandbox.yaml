@@ -1,0 +1,54 @@
+# Workload manifest (hub `workload-manifest`, story.0090): Poly's code-execution sandbox (OpenSandbox execd
+# behind Caddy) as its OWN lease, so a sandbox resize or re-mint never touches the app. A worker workload
+# named for its repo-spec service (`sandbox`): one plain container, no bindings, no runtime profile.
+# It receives ONLY the catalog keys whose `workloads` names `sandbox` (.cogni/secrets-catalog.yaml:
+# SANDBOX_EXECD_TOKEN), never the app's database or auth secrets. GH_TOKEN is not a lease secret: the app
+# passes a 1-hour token, minted by the operator from its App (narrowed to this repo), into each call.
+# The app derives this origin from its own host (`poly.cognidao.org` -> `poly-sandbox.cognidao.org`;
+# candidate-a `poly-sandbox-test`, preview `poly-sandbox-preview`), so the sandbox keeps a route on that
+# host. Execd enforces the token on every request except /version and /readyz.
+#
+# `variables` are plain, committed values (never secrets): git identity (display only) and a credential
+# helper that reads the call's GH_TOKEN at push time. Design: hub `node-sandbox-design`, `node-ai-push-token`.
+#
+# The image is node-template's standard sandbox (execd, Node 22, pnpm, gh), pinned by digest: a worker's
+# `image: .` would resolve to the app image. The digest equals node-template main's
+# .cogni/workloads/sandbox.yaml and services/sandbox/Dockerfile here; bump all three together, never to a
+# node-built or red-sandbox digest.
+apiVersion: score.dev/v1b1
+metadata:
+  name: sandbox
+  annotations:
+    cogni.dev/exclusive: "false"
+    cogni.dev/ephemeral-storage: 10Gi
+containers:
+  sandbox:
+    image: ghcr.io/cogni-dao/node-template-sandbox@sha256:2be482af45e49673b7fc42973cf8408d7497750593ef5153d4919092a1b4834e
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4096Mi
+    variables:
+      GIT_AUTHOR_NAME: poly AI
+      GIT_AUTHOR_EMAIL: poly@ai.cognidao.org
+      GIT_COMMITTER_NAME: poly AI
+      GIT_COMMITTER_EMAIL: poly@ai.cognidao.org
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: credential.https://github.com.helper
+      GIT_CONFIG_VALUE_0: '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 8080
+service:
+  ports:
+    web:
+      port: 80
+      targetPort: 8080
+resources:
+  web:
+    type: route
+    params:
+      host: poly-sandbox.cognidao.org
+      path: /
+      port: 80
