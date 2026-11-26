@@ -14,6 +14,7 @@ import pytest
 from pm_trader.engine import Engine
 from pm_trader.models import (
     AmbiguousResolutionError,
+    FeeSchedule,
     InsufficientBalanceError,
     InvalidOutcomeError,
     Market,
@@ -75,12 +76,13 @@ def _book(asks=None, bids=None):
     )
 
 
-def _mock(engine, market=None, book=None, fee=0):
+def _mock(engine, market=None, book=None, fee=0, fee_schedule=None):
     m = market or _market()
     b = book or _book()
     engine.api.get_market = MagicMock(return_value=m)
     engine.api.get_order_book = MagicMock(return_value=b)
     engine.api.get_fee_rate = MagicMock(return_value=fee)
+    engine.api.get_fee_schedule = MagicMock(return_value=fee_schedule)
     engine.api.get_midpoint = MagicMock(return_value=0.65)
 
 
@@ -435,7 +437,7 @@ class TestFeeAccuracy:
     """Fees must follow the exact Polymarket formula."""
 
     def test_fee_included_in_cost(self, acct):
-        _mock(acct, fee=200)  # 2% fee rate
+        _mock(acct, fee_schedule=FeeSchedule(rate=0.04, exponent=1.0))  # 4% taker rate
         initial_cash = acct.get_account().cash
         result = acct.buy("test-market", "yes", 100.0)
         spent = initial_cash - result.account.cash

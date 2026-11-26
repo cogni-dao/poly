@@ -169,13 +169,19 @@ class Engine:
         # Fetch live order book and fee rate
         token_id = market.get_token_id(outcome)
         book = self.api.get_order_book(token_id)
-        fee_rate_bps = self.api.get_fee_rate(token_id)
+        # Cogni-poly local patch (story.5028): real taker fee from the market's
+        # fee schedule (`/clob-markets/{conditionId}` -> fd), not the on/off
+        # `/fee-rate` flag. A market order is always a taker.
+        fee_schedule = self.api.get_fee_schedule(market.condition_id)
+        fee_rate_bps = fee_schedule.rate_bps if fee_schedule else 0
 
         if market.closed:
             raise MarketClosedError(market.slug)
 
         # Simulate fill against the real order book
-        fill = simulate_buy_fill(book, amount_usd, fee_rate_bps, order_type)
+        fill = simulate_buy_fill(
+            book, amount_usd, 0, order_type, fee_schedule=fee_schedule,
+        )
 
         if not fill.filled and not fill.is_partial:
             raise OrderRejectedError(
@@ -289,10 +295,13 @@ class Engine:
         # Fetch live book and fee rate
         token_id = market.get_token_id(outcome)
         book = self.api.get_order_book(token_id)
-        fee_rate_bps = self.api.get_fee_rate(token_id)
+        fee_schedule = self.api.get_fee_schedule(market.condition_id)
+        fee_rate_bps = fee_schedule.rate_bps if fee_schedule else 0
 
         # Simulate fill against the real order book
-        fill = simulate_sell_fill(book, shares, fee_rate_bps, order_type)
+        fill = simulate_sell_fill(
+            book, shares, 0, order_type, fee_schedule=fee_schedule,
+        )
 
         if not fill.filled and not fill.is_partial:
             raise OrderRejectedError(
@@ -540,7 +549,11 @@ class Engine:
                 market = self.api.get_market(order.market_slug)
                 token_id = market.get_token_id(order.outcome)
                 book = self.api.get_order_book(token_id)
-                fee_rate_bps = self.api.get_fee_rate(token_id)
+                # Cogni-poly local patch (story.5028): the snapshot pass fills
+                # against the crossing book, i.e. we are the taker -> charge
+                # the market's real taker fee.
+                fee_schedule = self.api.get_fee_schedule(market.condition_id)
+                fee_rate_bps = fee_schedule.rate_bps if fee_schedule else 0
 
                 # Cogni-poly local patch (bug.5016). When the snapshot crosses
                 # our limit, fill at ``order.limit_price``, not at the observed
@@ -565,7 +578,8 @@ class Engine:
                     # already at limit_price, so the simulator's price guard
                     # could never trip.
                     fill = simulate_buy_fill(
-                        syn_book, order.amount, fee_rate_bps, "fak",
+                        syn_book, order.amount, 0, "fak",
+                        fee_schedule=fee_schedule,
                     )
                 else:
                     crossing_size = sum(
@@ -580,7 +594,8 @@ class Engine:
                         asks=[],
                     )
                     fill = simulate_sell_fill(
-                        syn_book, order.amount, fee_rate_bps, "fak",
+                        syn_book, order.amount, 0, "fak",
+                        fee_schedule=fee_schedule,
                     )
 
                 if not fill.filled and not fill.is_partial:
@@ -663,7 +678,15 @@ class Engine:
             try:
                 market = self.api.get_market(market_slug)
                 token_id = market.get_token_id(outcome)
-                fee_rate_bps = self.api.get_fee_rate(token_id)
+                # Cogni-poly local patch (story.5028): charge the real taker
+                # fee here too. Paper orders are mirror intents placed as
+                # marketable limits (bug.5057) that would have crossed the
+                # book at placement, i.e. been takers; a purely passive
+                # resting order would be a maker (fee 0) but the sidecar has
+                # no placement-time book to tell the two apart, so we err
+                # conservative rather than report fee-free paper fills.
+                fee_schedule = self.api.get_fee_schedule(market.condition_id)
+                fee_rate_bps = fee_schedule.rate_bps if fee_schedule else 0
             except Exception:
                 # Snapshot path will retry on this token; we just skip
                 # the maker pre-pass for it this tick.
@@ -806,9 +829,10 @@ class Engine:
                         fill = simulate_buy_fill(
                             syn_book,
                             order.amount,
-                            fee_rate_bps,
+                            0,
                             "fak",
                             max_price=order.limit_price,
+                            fee_schedule=fee_schedule,
                         )
                     else:
                         if t_side != "BUY" or t_price < order.limit_price:
@@ -825,9 +849,10 @@ class Engine:
                         fill = simulate_sell_fill(
                             syn_book,
                             order.amount,
-                            fee_rate_bps,
+                            0,
                             "fak",
                             min_price=order.limit_price,
+                            fee_schedule=fee_schedule,
                         )
 
                     if not fill.filled and not fill.is_partial:

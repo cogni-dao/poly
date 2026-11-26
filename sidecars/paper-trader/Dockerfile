@@ -57,6 +57,8 @@ COPY tests /app/tests
 COPY vendor/pm_trader/tests/__init__.py /app/vendor/pm_trader/tests/__init__.py
 COPY vendor/pm_trader/tests/conftest.py /app/vendor/pm_trader/tests/conftest.py
 COPY vendor/pm_trader/tests/test_check_orders_maker_fill.py /app/vendor/pm_trader/tests/test_check_orders_maker_fill.py
+# Pure (no network) fill-math tests, incl. the story.5028 taker-fee formula.
+COPY vendor/pm_trader/tests/test_orderbook.py /app/vendor/pm_trader/tests/test_orderbook.py
 
 # Test env mirrors prod env shape; data dir under /tmp/test to avoid clobbering.
 ENV PM_TRADER_DATA_DIR=/tmp/pm_trader-test
@@ -68,6 +70,7 @@ ENV PAPER_CHECK_ORDERS_INTERVAL_SECONDS=0.1
 # processes = clean import state for each suite.
 RUN pytest -q /app/tests \
   && pytest -q /app/vendor/pm_trader/tests/test_check_orders_maker_fill.py \
+  && pytest -q /app/vendor/pm_trader/tests/test_orderbook.py \
   && printf 'paper-smoke-passed\n' > /tmp/paper-smoke-proof
 
 # Only the constant proof crosses from test. Runtime keeps its existing

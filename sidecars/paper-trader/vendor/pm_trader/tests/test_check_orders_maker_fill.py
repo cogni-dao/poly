@@ -18,7 +18,7 @@ import pytest
 
 from pm_trader.db import Database
 from pm_trader.engine import Engine
-from pm_trader.models import Market, OrderBook, OrderBookLevel
+from pm_trader.models import FeeSchedule, Market, OrderBook, OrderBookLevel
 from pm_trader.orders import create_order
 
 
@@ -95,6 +95,7 @@ def _mock_api(
     market: Market | None = None,
     book: OrderBook | None = None,
     fee_rate: int = 0,
+    fee_schedule: FeeSchedule | None = None,
     trades: list[dict] | None = None,
     trades_side_effect=None,
 ) -> None:
@@ -104,6 +105,7 @@ def _mock_api(
     engine.api.get_market = MagicMock(return_value=m)
     engine.api.get_order_book = MagicMock(return_value=b)
     engine.api.get_fee_rate = MagicMock(return_value=fee_rate)
+    engine.api.get_fee_schedule = MagicMock(return_value=fee_schedule)
     if trades_side_effect is not None:
         engine.api.get_trades_since = MagicMock(side_effect=trades_side_effect)
     else:
@@ -416,6 +418,7 @@ class TestLagWindowCursor:
         engine.api.get_market = MagicMock(return_value=_market())
         engine.api.get_order_book = MagicMock(return_value=_empty_book())
         engine.api.get_fee_rate = MagicMock(return_value=0)
+        engine.api.get_fee_schedule = MagicMock(return_value=None)
         engine.api.get_trades_since = MagicMock(return_value=[])
         # Pre-seed to simulate prior steady-state operation in this time
         # domain (real created_at would be ~1.7e9; we want a controlled
@@ -749,3 +752,104 @@ class TestFillPriceAtLimit:
         assert len(results) == 1
         trade = _latest_trade_row(engine)
         assert trade["avg_price"] == pytest.approx(0.50)
+
+
+# ---------------------------------------------------------------------------
+# story.5028 — paper fills carry the real taker fee (fd {r, e}), not 0
+# ---------------------------------------------------------------------------
+
+
+class TestTakerFeeOnPaperFills:
+    """fee = C * rate * (p * (1 - p)) ** exponent, rounded to 5 dp."""
+
+    SCHEDULE = FeeSchedule(rate=0.04, exponent=1.0)
+
+    def test_maker_pass_buy_fill_records_taker_fee(self, engine: Engine):
+        # $10 @ 0.50 limit -> C = 20 shares; fee = 20 * 0.04 * 0.25 = 0.2
+        _make_buy(engine, amount=10.0, limit=0.50)
+        _mock_api(
+            engine,
+            fee_schedule=self.SCHEDULE,
+            trades=[_trade(price=0.50, size=500, side="SELL")],
+        )
+
+        results = engine.check_orders()
+
+        assert results[0]["action"] == "filled"
+        assert results[0]["fill"]["fee"] == pytest.approx(0.2, abs=1e-9)
+
+    def test_snapshot_pass_buy_fill_records_taker_fee(self, engine: Engine):
+        _make_buy(engine, amount=10.0, limit=0.50)
+        _mock_api(
+            engine,
+            fee_schedule=self.SCHEDULE,
+            book=_book(asks=[(0.48, 500)]),
+            trades=[],
+        )
+
+        results = engine.check_orders()
+
+        # bug.5016: fills at the limit (0.50) -> 20 shares.
+        assert results[0]["action"] == "filled"
+        assert results[0]["fill"]["fee"] == pytest.approx(0.2, abs=1e-9)
+
+    def test_fee_free_market_records_zero_fee(self, engine: Engine):
+        _make_buy(engine, amount=10.0, limit=0.50)
+        _mock_api(
+            engine,
+            fee_schedule=None,
+            trades=[_trade(price=0.50, size=500, side="SELL")],
+        )
+
+        results = engine.check_orders()
+
+        assert results[0]["fill"]["fee"] == 0.0
+
+    def test_cash_is_debited_cost_plus_fee(self, engine: Engine):
+        _make_buy(engine, amount=10.0, limit=0.50)
+        _mock_api(
+            engine,
+            fee_schedule=self.SCHEDULE,
+            trades=[_trade(price=0.50, size=500, side="SELL")],
+        )
+
+        engine.check_orders()
+
+        assert engine.get_account().cash == pytest.approx(10_000.0 - 10.0 - 0.2)
+
+
+class TestFeeScheduleLookup:
+    """`PolymarketClient.get_fee_schedule` reads `/clob-markets/{cid}` -> fd."""
+
+    def _with_response(self, engine: Engine, payload):
+        calls: list[str] = []
+
+        def fake_clob_get(path, params=None):
+            calls.append(path)
+            return payload
+
+        engine.api._clob_get = fake_clob_get  # type: ignore[method-assign]
+        return calls
+
+    def test_parses_fd_and_caches(self, engine: Engine):
+        calls = self._with_response(
+            engine, {"fd": {"r": 0.04, "e": 1, "to": True}, "mts": 0.01}
+        )
+        s = engine.api.get_fee_schedule("0xabc123")
+        assert s == FeeSchedule(rate=0.04, exponent=1.0, taker_only=True)
+        assert engine.api.get_fee_schedule("0xabc123") == s
+        assert calls == ["/clob-markets/0xabc123"]
+
+    def test_null_fd_is_fee_free(self, engine: Engine):
+        self._with_response(engine, {"fd": None})
+        assert engine.api.get_fee_schedule("0xabc123") is None
+
+    def test_missing_or_malformed_fd_raises_never_zero(self, engine: Engine):
+        from pm_trader.models import ApiError
+
+        self._with_response(engine, {"mts": 0.01})
+        with pytest.raises(ApiError):
+            engine.api.get_fee_schedule("0xabc123")
+        self._with_response(engine, {"fd": {"r": "nope"}})
+        with pytest.raises(ApiError):
+            engine.api.get_fee_schedule("0xdef456")

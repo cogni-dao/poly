@@ -417,6 +417,7 @@ def _mock_engine_api(engine):
     engine.api.get_order_book = MagicMock(return_value=SAMPLE_BOOK)
     engine.api.get_midpoint = MagicMock(return_value=0.65)
     engine.api.get_fee_rate = MagicMock(return_value=0)
+    engine.api.get_fee_schedule = MagicMock(return_value=None)
 
 
 class TestSearchMarkets:

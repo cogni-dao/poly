@@ -139,6 +139,8 @@ function buildSizingPolicy(params: {
   mirrorCapitalBudgetUsdc?: number | null;
   /** Runtime-eligible account group used to fail closed on ambiguous holdings. */
   positionGapBudgetGroup?: PositionGapBudgetGroup;
+  /** story.5028 entry-price floor for `target_percentile_scaled`; omitted ⇒ off. */
+  minEntryPrice?: number;
 }): SizingPolicy {
   const snapshot = snapshotForTargetWallet(params.targetWallet);
   const resolvedKind: Exclude<SizingPolicyKindInput, "auto"> =
@@ -189,6 +191,9 @@ function buildSizingPolicy(params: {
     kind: "target_percentile_scaled",
     max_usdc_per_condition: params.mirrorMaxUsdcPerTrade,
     statistic: buildWalletStatistic(snapshot, params.mirrorFilterPercentile),
+    ...(params.minEntryPrice !== undefined
+      ? { min_entry_price: params.minEntryPrice }
+      : {}),
   };
 }
 
@@ -245,6 +250,11 @@ export function buildMirrorTargetConfig(params: {
   mirrorCapitalBudgetUsdc?: number | null;
   /** Account group computed from the runtime-eligible target set. */
   positionGapBudgetGroup?: PositionGapBudgetGroup;
+  /**
+   * story.5028 — optional entry-price floor (0–1) for `target_percentile_scaled`.
+   * Omitted ⇒ off. Not yet persisted per target; callers pass it explicitly.
+   */
+  minEntryPrice?: number;
 }): MirrorTargetConfig {
   const mirrorFilterPercentile =
     params.mirrorFilterPercentile ?? DEFAULT_CONVICTION_FILTER_PERCENTILE;
@@ -268,6 +278,9 @@ export function buildMirrorTargetConfig(params: {
       : {}),
     ...(params.positionGapBudgetGroup !== undefined
       ? { positionGapBudgetGroup: params.positionGapBudgetGroup }
+      : {}),
+    ...(params.minEntryPrice !== undefined
+      ? { minEntryPrice: params.minEntryPrice }
       : {}),
   });
   // SELF_CONTAINED_SIZING_POLICIES: `mirror_fill_exact` and `position_gap`
