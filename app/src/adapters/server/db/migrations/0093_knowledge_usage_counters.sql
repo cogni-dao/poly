@@ -1,4 +1,7 @@
-CREATE TABLE "knowledge_cite_pairs" (
+-- Hand-edited after generation: IF NOT EXISTS, because the poly candidate database already holds these two tables from the
+-- superseded poly#334 flight (its own 0092). Production has neither; the statements are identical there. FORCE RLS lines below are the
+-- same story.0061 tail the package exports as KNOWLEDGE_USAGE_FORCE_RLS_SQL.
+CREATE TABLE IF NOT EXISTS "knowledge_cite_pairs" (
 	"atom_id" text NOT NULL,
 	"work_item_id" text NOT NULL,
 	"first_item_revision" integer NOT NULL,
@@ -7,7 +10,7 @@ CREATE TABLE "knowledge_cite_pairs" (
 );
 --> statement-breakpoint
 ALTER TABLE "knowledge_cite_pairs" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
-CREATE TABLE "knowledge_read_daily" (
+CREATE TABLE IF NOT EXISTS "knowledge_read_daily" (
 	"day" date NOT NULL,
 	"atom_id" text NOT NULL,
 	"principal_id" text NOT NULL,
