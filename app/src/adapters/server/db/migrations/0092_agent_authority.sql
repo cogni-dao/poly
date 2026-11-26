@@ -1,6 +1,20 @@
 -- Poly 0092: the shared agent authority tables (`@cogni-dao/agent-grants/schema`) and the seed of the two internal principals (story.0090).
--- Provenance: Poly has no earlier agent_principals / agent_roles table (verified: no migration 0000-0091 names either), so this is plain generated DDL
--- plus the package SQL tail `migrations/agent_authority.sql` (agent-grants 0.10.0), appended verbatim. No existing row is adopted, altered or deleted.
+-- APPROVED: CEO (Derek) 2026-11-27: purge the #314 leftovers, forward-looking only.
+-- Provenance, corrected: Poly's JOURNAL (migrations 0000-0091) names no agent_principals / agent_roles, but the candidate-a and preview databases hold
+-- the leftovers of the reverted poly#314 (story.5158, "adopt agent-grants 0.5.0"): its migrations 0092_agent_identity (sha256 039ff5ba..),
+-- 0093_agent_spawn_grants (e30cb9c2..) and 0094_agent_personal_grants (f9aeaaa0..) were applied on 11-13 (Loki COGNI_MIGRATION_RECEIPT_V1 shows them as
+-- `unknown:*` entries, declared 92 / applied 97) and #314 was reverted by #317 (9bbc85b28), which never removed them. Evidence for the purge:
+--   * current main reads none of the five tables (git grep of the names and the Drizzle identifiers: no hit outside migrations and docs);
+--   * no other table, policy or view references them (their foreign keys point only from agent_* to users); the one outside hook is the trigger on
+--     user_bindings, which this step drops;
+--   * production holds none of them (a read of the production Poly datasource: `relation "agent_credentials" does not exist`).
+-- The step below runs ONLY when that exact #314 shape is present (agent_roles.resource_kind exists, agent_principals.owner_source_kind is absent, and both #314
+-- triggers exist). Production and fresh databases fall through to the plain DDL unchanged; any other shape keeps failing loudly on CREATE TABLE.
+-- It drops exactly: the triggers agent_principals_no_wallet_binding (user_bindings) and agent_credentials_external_principal_only; the function
+-- agent_credential_state(agent_credentials); the tables agent_claims, agent_spawn_grants, agent_credentials, agent_roles, agent_principals; and the trigger functions
+-- agent_principals_refuse_wallet_binding() and agent_credentials_require_external_principal(). No CASCADE: an unexpected dependent aborts the whole migration.
+-- It deletes no other row. The seeded `users` rows node-ai and prioritizer stay: the package seed below reuses the same IDs and upserts (ON CONFLICT DO NOTHING).
+-- Then the generated DDL for the package tables is created exactly as on a fresh database, plus the package SQL tail `migrations/agent_authority.sql` (agent-grants 0.10.0), appended verbatim.
 -- Poly's own account-grant plane (`agent_capability_grants` and the 11 delegated policies that read it) is untouched; it retires in a later migration with its own review.
 -- Deliberately NOT here (each joins in the PR that needs it, with its own conformance run):
 --   * the package tail `agent_account_grants.sql` (the `agent_has_scope()` function and the CURRENT_USER select grant): the account columns and the
@@ -8,7 +22,28 @@
 --   * `agent_credentials` and its tail `agent_credentials.sql`, `payer_bindings`, orgs and service-auth: this PR adds no credential route, so
 --     `runCredentialConformance` has nothing to run against; the credentials PR takes that tail and that suite together;
 --   * the AGENT_WALLET_IS_NOT_A_PAYEE trigger and principal backfill (node-template 0043, 0044): they change tables Poly owns and are written with the grant-plane PR.
--- Gate: app/tests/component/db/agent-authority-migration.int.test.ts (app-role wall, service-role privileges, seed idempotence, legacy plane unchanged, runGrantConformance).
+-- Gate: app/tests/component/db/agent-authority-migration.int.test.ts (app-role wall, service-role privileges, seed idempotence, legacy plane unchanged, runGrantConformance,
+-- and the #314 purge applied on top of the real #314 files).
+DO $poly314$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'agent_roles' AND column_name = 'resource_kind')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'agent_principals' AND column_name = 'owner_source_kind')
+     AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agent_principals_no_wallet_binding' AND tgrelid = to_regclass('public.user_bindings') AND NOT tgisinternal)
+     AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agent_credentials_external_principal_only' AND tgrelid = to_regclass('public.agent_credentials') AND NOT tgisinternal)
+  THEN
+    DROP TRIGGER "agent_principals_no_wallet_binding" ON "public"."user_bindings";
+    DROP TRIGGER "agent_credentials_external_principal_only" ON "public"."agent_credentials";
+    DROP FUNCTION "public"."agent_credential_state"("public"."agent_credentials");
+    DROP TABLE "public"."agent_claims";
+    DROP TABLE "public"."agent_spawn_grants";
+    DROP TABLE "public"."agent_credentials";
+    DROP TABLE "public"."agent_roles";
+    DROP TABLE "public"."agent_principals";
+    DROP FUNCTION "public"."agent_principals_refuse_wallet_binding"();
+    DROP FUNCTION "public"."agent_credentials_require_external_principal"();
+  END IF;
+END
+$poly314$;--> statement-breakpoint
 CREATE TABLE "agent_principals" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"kind" text NOT NULL,

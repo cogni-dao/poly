@@ -13,6 +13,8 @@
  *   - SEED_IS_EXACT_AND_IDEMPOTENT: two credential-less principals, two `users` rows with no wallet, zero role rows; re-running the tail changes nothing.
  *   - LEGACY_PLANE_UNCHANGED: `agent_capability_grants`, its rows and every policy that reads it are byte-identical before and after 0092.
  *   - GRANT_CONFORMANCE: `runGrantConformance` passes over `createPostgresAgentGrantsStore` on the service role.
+ *   - POLY_314_PURGE: on a database holding the reverted poly#314 leftovers (the three real #314 migrations, applied on top of the real chain through 0091),
+ *     0092 purges exactly those objects, creates the package tables and seed, deletes no other row and leaves `user_bindings` writable; a partial shape is not purged.
  * Omissions, by design (recorded in the 0092 header too):
  *   - `runCredentialConformance`: Poly adds NO `agent_credentials` table, credential routes or trigger in this PR, so there is nothing for that suite to run
  *     against. Adopting credentials means the package tail `agent_credentials.sql` plus that suite, in the PR that adds the credential routes.
@@ -97,6 +99,15 @@ async function createTemplate(name: string, folder: string) {
     );
     await migrate(drizzle(app), { migrationsFolder: folder });
   });
+  // The rollout role creates tables in later migrations; the provisioner grants the service role DML on those too.
+  const owner = postgres(urlFor(name), { max: 1, onnotice: () => {} });
+  try {
+    await owner.unsafe(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${roles.migration} IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${roles.service}`
+    );
+  } finally {
+    await owner.end();
+  }
 }
 
 /** A journal-truncated copy of the real chain: the exact history before 0092, not a second model of it. */
@@ -304,6 +315,137 @@ describe("migration 0092 leaves Poly's own grant plane untouched", () => {
       expect(await legacyFingerprint(service)).toEqual(before);
     });
   });
+});
+
+/**
+ * The reverted poly#314 (story.5158) left its identity tables, functions and triggers on the candidate-a and preview databases. The files
+ * under tests/_fixtures/db/poly-314 are those three migrations, verbatim from #314's merge commit 3674c3db5 (reverted by #317).
+ */
+const poly314Files = ["0092_agent_identity", "0093_agent_spawn_grants", "0094_agent_personal_grants"];
+const poly314Fixtures = path.resolve(import.meta.dirname, "../../_fixtures/db/poly-314");
+const poly314Objects = {
+  tables: ["agent_credentials", "agent_spawn_grants", "agent_claims"],
+  functions: [
+    "agent_principals_refuse_wallet_binding",
+    "agent_credential_state",
+    "agent_credentials_require_external_principal",
+  ],
+  triggers: ["agent_principals_no_wallet_binding", "agent_credentials_external_principal_only"],
+};
+
+async function applyPoly314(app: postgres.Sql) {
+  for (const file of poly314Files) {
+    const text = await readFile(path.join(poly314Fixtures, `${file}.sql`), "utf8");
+    await app.begin(async (tx) => {
+      for (const statement of text
+        .split("--> statement-breakpoint")
+        .map((chunk) => chunk.trim())
+        .filter(Boolean))
+        await tx.unsafe(statement);
+    });
+  }
+}
+
+async function poly314Presence(sql: postgres.Sql) {
+  return {
+    tables: await sql`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY(${poly314Objects.tables}) ORDER BY 1`,
+    functions: await sql`SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = ANY(${poly314Objects.functions}) ORDER BY 1`,
+    triggers: await sql`SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname = ANY(${poly314Objects.triggers}) ORDER BY 1`,
+    retiredColumns: await sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'
+      AND ((table_name = 'agent_roles' AND column_name IN ('resource_kind','owner_user_id')) OR (table_name = 'agent_principals' AND column_name = 'owner_user_id')) ORDER BY 1,2`,
+  };
+}
+
+describe("migration 0092 on a database holding the reverted poly#314 leftovers (CEO-approved purge, forward-looking only)", () => {
+  it("purges exactly the #314 objects, creates the package tables, keeps the seed users, deletes no other row, and leaves user_bindings writable", async () => {
+    await fixture(through91Template, async ({ app, service, migration }) => {
+      await applyPoly314(app);
+      // The leftovers really are there, with #314's data in them, and the hook on user_bindings is live.
+      expect((await poly314Presence(service)).tables).toHaveLength(3);
+      expect((await poly314Presence(service)).triggers).toHaveLength(2);
+      const agent = randomUUID();
+      await service`INSERT INTO users(id, name) VALUES (${agent}, 'poly314 agent'), ('outside-user', 'Outside user')`;
+      await service`INSERT INTO agent_principals(kind, user_id) VALUES ('external', ${agent})`;
+      await service`INSERT INTO agent_roles(principal_user_id, scope, approved_by, granted_at) VALUES (${agent}, 'knowledge:read', 'outside-user', now())`;
+      await service`INSERT INTO agent_credentials(user_id, token_hash, created_from, expires_at, renew_until)
+        VALUES (${agent}, 'h', 'key_upgrade', now() + interval '1 day', now() + interval '2 day')`;
+      await expect(
+        service`INSERT INTO user_bindings(id, user_id, provider, external_id) VALUES (${randomUUID()}, ${agent}, 'wallet', '0xabc')`
+      ).rejects.toMatchObject({ code: "23514" }); // #314's trigger refuses a wallet for an agent principal
+      // Rows that must survive: seed users, a legacy grant, an ordinary user, billing data.
+      await service`INSERT INTO billing_accounts(id, owner_user_id, balance_credits) VALUES ('keep-account','outside-user',0)`;
+      await service`INSERT INTO agent_capability_grants(billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id)
+        VALUES ('keep-account', ${agent}, ARRAY['account:read'], now() + interval '10 days', 'outside-user')`;
+      const keep = async () => ({
+        users: await service`SELECT id, name FROM users WHERE id NOT IN ('00000000-0000-4000-a000-0000000a0001','00000000-0000-4000-a000-0000000a0002') ORDER BY id`,
+        seedUsers: await service`SELECT id, name FROM users WHERE id IN (${NODE_AI}, ${PRIORITIZER}) ORDER BY id`,
+        billing: await service`SELECT id FROM billing_accounts ORDER BY id`,
+        legacyGrants: await service`SELECT count(*)::int AS n FROM agent_capability_grants`,
+      });
+      const before = await keep();
+      expect(before.seedUsers).toHaveLength(2); // seeded by #314 with the same IDs the package seed uses
+
+      await migrate(drizzle(migration), { migrationsFolder: migrations }); // applies only 0092
+
+      // The #314 objects are gone.
+      expect(await poly314Presence(service)).toEqual({
+        tables: [],
+        functions: [],
+        triggers: [],
+        retiredColumns: [],
+      });
+      // The package tables exist exactly as on a fresh database, with the exact seed and no role row.
+      expect(
+        await service`SELECT column_name FROM information_schema.columns WHERE table_name = 'agent_principals' AND column_name = 'owner_source_kind'`
+      ).toHaveLength(1);
+      expect(
+        await service`SELECT column_name FROM information_schema.columns WHERE table_name = 'agent_roles' AND column_name IN ('resource','account_id') ORDER BY 1`
+      ).toEqual([{ column_name: "account_id" }, { column_name: "resource" }]);
+      expect(await service`SELECT slug, kind, user_id FROM agent_principals ORDER BY slug`).toEqual([
+        { slug: "node-ai", kind: "internal", user_id: NODE_AI },
+        { slug: "prioritizer", kind: "internal", user_id: PRIORITIZER },
+      ]);
+      expect(await service`SELECT * FROM agent_roles`).toHaveLength(0);
+      expect(
+        await service`SELECT c.relname FROM pg_class c WHERE c.oid IN ('agent_roles'::regclass,'agent_principals'::regclass)
+          AND c.relrowsecurity AND c.relforcerowsecurity ORDER BY 1`
+      ).toEqual([{ relname: "agent_principals" }, { relname: "agent_roles" }]);
+      // Nothing else was touched: the seed users were upserted (not duplicated), every other row is identical.
+      expect(await keep()).toEqual(before);
+      // user_bindings writes work with the hook gone, including the wallet binding #314 refused.
+      await service`INSERT INTO user_bindings(id, user_id, provider, external_id) VALUES (${randomUUID()}, ${agent}, 'wallet', '0xabc')`;
+      await service`INSERT INTO user_bindings(id, user_id, provider, external_id) VALUES (${randomUUID()}, 'outside-user', 'wallet', '0xdef')`;
+      expect(await service`SELECT count(*)::int AS n FROM user_bindings WHERE external_id IN ('0xabc','0xdef')`).toEqual([{ n: 2 }]);
+      // A re-run is a no-op: the journal skips 0092, and the guard itself is false on the migrated database.
+      await migrate(drizzle(migration), { migrationsFolder: migrations });
+      const file = await readFile(path.join(migrations, "0092_agent_authority.sql"), "utf8");
+      const guard = file.slice(file.indexOf("DO $poly314$"), file.indexOf("--> statement-breakpoint"));
+      expect(guard).toContain("DROP TABLE");
+      await migration.begin(async (tx) => {
+        await tx.unsafe(guard.trim());
+      });
+      expect(await service`SELECT slug FROM agent_principals ORDER BY slug`).toEqual([
+        { slug: "node-ai" },
+        { slug: "prioritizer" },
+      ]);
+      expect(await keep()).toEqual(before);
+    });
+  }, 60_000);
+
+  it("does not run for a database with only part of the #314 shape: it keeps failing loudly and changes nothing", async () => {
+    await fixture(through91Template, async ({ app, service, migration }) => {
+      await applyPoly314(app);
+      await app.unsafe(`DROP TRIGGER agent_credentials_external_principal_only ON agent_credentials`);
+      await expect(
+        migrate(drizzle(migration), { migrationsFolder: migrations })
+      ).rejects.toMatchObject({ cause: { code: "42P07" } });
+      expect((await poly314Presence(service)).tables).toHaveLength(3);
+      expect(await service`SELECT to_regclass('public.agent_principals')::text AS t`).toEqual([{ t: "agent_principals" }]);
+      expect(
+        await service`SELECT column_name FROM information_schema.columns WHERE table_name = 'agent_principals' AND column_name = 'owner_user_id'`
+      ).toHaveLength(1); // still #314's table, untouched
+    });
+  }, 60_000);
 });
 
 // The released behavioral contract over the adopted SQL store, each case in its own database cloned from the migrated template,
