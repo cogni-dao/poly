@@ -28,7 +28,7 @@ export function buildInprocUsageFact(
     executorType: "inproc",
     billingAccountId: "billing-acct-1",
     virtualKeyId: "vk-1",
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     model: "test-model",
     inputTokens: 100,
     outputTokens: 50,
@@ -66,7 +66,7 @@ export function buildByoUsageFact(
     executorType: "inproc",
     billingAccountId: "billing-acct-1",
     virtualKeyId: "vk-1",
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     model: "gpt-4o",
     inputTokens: 200,
     outputTokens: 80,
@@ -89,7 +89,7 @@ export function buildExternalUsageFact(
     executorType: "langgraph_server",
     billingAccountId: "billing-acct-1",
     virtualKeyId: "vk-1",
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     ...overrides,
   };
 }

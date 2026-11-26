@@ -27,7 +27,7 @@ import type { GraphRunRequest } from "@/ports";
 const TEST_BILLING_ACCOUNT_ID = "test-billing-account-123";
 const TEST_VIRTUAL_KEY_ID = "vk-test-456";
 const TEST_RUN_ID = "run-test-789";
-const TEST_GRAPH_NAME = "poet";
+const TEST_GRAPH_NAME = "cogni";
 const TEST_GRAPH_ID = `langgraph:${TEST_GRAPH_NAME}`;
 
 /**

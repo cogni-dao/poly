@@ -59,21 +59,23 @@ import {
   VCS_GET_CI_STATUS_NAME,
   VCS_LIST_PRS_NAME,
   VCS_MERGE_PR_NAME,
+  SANDBOX_SHELL_NAME,
+  type SandboxShellCapability,
   WEB_SEARCH_NAME,
   WORK_ITEM_QUERY_NAME,
   WORK_ITEM_READ_NAME,
-  WORK_ITEM_TRANSITION_NAME,
 } from "@cogni/ai-tools";
 
 import {
   createEdoDecideImplementation,
   createGoalListImplementation,
+  createSandboxShellImplementation,
   createKnowledgeSearchImplementation,
   createWorkItemQueryImplementation,
   createWorkItemReadImplementation,
-  createWorkItemTransitionImplementation,
   GOAL_LIST_NAME,
   getCurrentTimeImplementation,
+  sandboxShellUnavailableImplementation,
   type WorkItemCapability,
 } from "@cogni/shared-ai-tools";
 
@@ -91,6 +93,8 @@ export interface ToolBindingDeps {
   readonly scheduleCapability: ScheduleCapability;
   readonly vcsCapability: VcsCapability;
   readonly workItemCapability: WorkItemCapability;
+  /** Null when no sandbox token or host is configured: the shell tool then answers `unavailable`. */
+  readonly sandboxShellCapability: SandboxShellCapability | null;
 }
 
 /**
@@ -211,8 +215,11 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
       nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,
 
-    [WORK_ITEM_TRANSITION_NAME]: createWorkItemTransitionImplementation({
-      workItemCapability: deps.workItemCapability,
-    }) as AnyToolImplementation,
+    // The node AI's shell (sandbox:exec): unavailable until the sandbox token and host are configured.
+    [SANDBOX_SHELL_NAME]: (deps.sandboxShellCapability
+      ? createSandboxShellImplementation({
+          sandboxShellCapability: deps.sandboxShellCapability,
+        })
+      : sandboxShellUnavailableImplementation) as AnyToolImplementation,
   };
 }

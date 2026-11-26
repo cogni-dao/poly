@@ -40,3 +40,4 @@ export type {
 } from "@cogni/node-shared/observability/events/payments";
 // --- App-local: server logger/metrics/redact (pino + prom-client runtime deps) ---
 export * from "./server";
+export { type FailureFields, failureFields } from "./db-error-fields";
