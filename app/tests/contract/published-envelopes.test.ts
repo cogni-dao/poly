@@ -85,7 +85,7 @@ describe("canonical read inheritance", () => {
         listRelations: vi.fn(),
       },
       workItemCommand: {} as WorkItemCommandPort,
-      backlogWriter: { store: { patch }, principalId: () => "agent-a" },
+      backlogWriter: { store: { patch }, attribution: () => ({ actor: "agent-a" }) },
     });
     const output = await createWorkItemQueryImplementation({
       workItemCapability: capability,
