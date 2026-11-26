@@ -65,7 +65,6 @@ export type {
   WorkItemCapability,
   WorkItemInfo,
   WorkItemQueryParams,
-  WorkItemTransitionResult,
 } from "./capabilities";
 // Capabilities
 export {
@@ -147,6 +146,24 @@ export {
   getCurrentTimeContract,
   getCurrentTimeImplementation,
 } from "./tools/get-current-time";
+// The sandbox shell tool is the released shared one; only its names, schemas, implementations and capability types are re-exported.
+export {
+  createSandboxShellImplementation,
+  SANDBOX_SHELL_NAME,
+  type SandboxShellCapability,
+  type SandboxShellDeps,
+  type SandboxShellErrorCode,
+  type SandboxShellInput,
+  SandboxShellInputSchema,
+  type SandboxShellOutput,
+  SandboxShellOutputSchema,
+  type SandboxShellParams,
+  type SandboxShellRedacted,
+  type SandboxShellResult,
+  sandboxShellBoundTool,
+  sandboxShellContract,
+  sandboxShellUnavailableImplementation,
+} from "@cogni/shared-ai-tools";
 export {
   createKnowledgeReadImplementation,
   KNOWLEDGE_READ_NAME,
@@ -363,19 +380,6 @@ export {
   workItemQueryContract,
   workItemQueryStubImplementation,
 } from "./tools/work-item-query";
-export {
-  createWorkItemTransitionImplementation,
-  WORK_ITEM_TRANSITION_NAME,
-  type WorkItemTransitionDeps,
-  type WorkItemTransitionInput,
-  WorkItemTransitionInputSchema,
-  type WorkItemTransitionOutput,
-  WorkItemTransitionOutputSchema,
-  type WorkItemTransitionRedacted,
-  workItemTransitionBoundTool,
-  workItemTransitionContract,
-  workItemTransitionStubImplementation,
-} from "./tools/work-item-transition";
 export {
   createWorkItemReadImplementation,
   WORK_ITEM_READ_NAME,

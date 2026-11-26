@@ -152,10 +152,10 @@ describe("OpenAI Chat Completions Contract", () => {
       const input = {
         model: "gpt-4o",
         messages: [{ role: "user", content: "Hello" }],
-        graph_name: "langgraph:poet",
+        graph_name: "langgraph:cogni",
       };
       const parsed = chatCompletionsContract.input.parse(input);
-      expect(parsed.graph_name).toBe("langgraph:poet");
+      expect(parsed.graph_name).toBe("langgraph:cogni");
     });
 
     it("should reject missing model", () => {

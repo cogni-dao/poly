@@ -22,7 +22,6 @@ import type {
   WorkItemCapability,
   WorkItemInfo,
   WorkItemQueryParams,
-  WorkItemTransitionResult,
 } from "@cogni/shared-ai-tools";
 import { WorkItemPatchConflictError } from "@cogni/shared-ai-tools";
 import type {
@@ -140,7 +139,7 @@ export function createWorkItemCapability(
      * item with each move's readings, verdict and metric → KPI → goal chain, and with `includeLinks`
      * the first page of citation links.
      */
-    async read(id, options): Promise<WorkItemInfo | null> {
+    async read(id, options) {
       const result = await list({ ids: [id], limit: 1 });
       const item = result.items
         .map(toWorkItemInfo)
@@ -166,27 +165,6 @@ export function createWorkItemCapability(
         ...(result.nextCursor !== undefined && {
           nextCursor: result.nextCursor,
         }),
-      };
-    },
-
-    async transitionStatus(input): Promise<WorkItemTransitionResult> {
-      const current = await workItemQuery.get(toWorkItemId(input.id));
-      if (!current) {
-        throw new Error(`Work item not found: ${input.id}`);
-      }
-
-      const updated = await workItemCommand.transitionStatus({
-        id: toWorkItemId(input.id),
-        expectedRevision: String(current.revision),
-        toStatus: input.toStatus as WorkItemStatus,
-        ...(input.reason && { reason: input.reason }),
-      });
-
-      return {
-        id: updated.id,
-        previousStatus: current.status,
-        newStatus: updated.status,
-        revision: updated.revision as number,
       };
     },
 

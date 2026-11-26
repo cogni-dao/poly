@@ -29,7 +29,7 @@ const emptyToUndefined = (v: unknown) =>
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url().optional());
 const optionalString = z.preprocess(
   emptyToUndefined,
-  z.string().min(1).optional()
+  z.string().min(1).optional(),
 );
 
 export interface EnvValidationMeta {
@@ -57,6 +57,24 @@ export const serverSchema = z.object({
   // Application environment (controls adapter wiring)
   APP_ENV: z.enum(["test", "production"]),
   APP_BASE_URL: z.string().url().optional(),
+  // Exact authenticated actors permitted to use shared Cogni coding.
+  COGNI_CODING_ACTOR_IDS: z
+    .string()
+    .default("")
+    .transform((value, ctx) => {
+      const ids = value
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (ids.some((id) => !z.string().uuid().safeParse(id).success)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Expected comma-separated UUIDs",
+        });
+        return z.NEVER;
+      }
+      return ids;
+    }),
   DOMAIN: z.string().optional(),
 
   // Deployment environment (for observability labels and analytics filtering)
@@ -75,7 +93,7 @@ export const serverSchema = z.object({
     .default(
       process.env.NODE_ENV === "production"
         ? "http://litellm:4000"
-        : "http://localhost:4000"
+        : "http://localhost:4000",
     ),
   LITELLM_MASTER_KEY: z.string().min(1),
 
@@ -166,8 +184,8 @@ export const serverSchema = z.object({
   // Required when on-chain governance signal execution is enabled.
   ALCHEMY_WEBHOOK_SECRET: optionalString,
 
-  // GitHub Review App credentials - for PR review Check Runs + comments.
-  // Optional: PR review feature is disabled when not configured.
+  // GitHub App credentials - used by governance signal dispatch (Alchemy webhook).
+  // Optional: signal dispatch is skipped when not configured.
   // These are the same env vars used by scheduler-worker for ingestion.
   GH_REVIEW_APP_ID: optionalString,
   GH_REVIEW_APP_PRIVATE_KEY_BASE64: optionalString,
@@ -224,6 +242,28 @@ export const serverSchema = z.object({
   DOLTHUB_API_TOKEN: optionalString,
   DOLTHUB_OAUTH_CLIENT_ID: optionalString,
   DOLTHUB_OAUTH_CLIENT_SECRET: optionalString,
+
+  // Remote sandbox workspace (services/sandbox, isolated lease) - Optional.
+  // SANDBOX_EXECD_TOKEN: shared execd access token; the sandbox refuses to start without a
+  // >=32-char value. SANDBOX_BASE_URL: override for local dev; otherwise the origin is
+  // derived from APP_BASE_URL (poly-test.* -> poly-sandbox-test.*).
+  SANDBOX_EXECD_TOKEN: z.preprocess(
+    emptyToUndefined,
+    z.string().min(32).optional(),
+  ),
+  SANDBOX_BASE_URL: optionalUrl,
+
+  // Node AI push token (hub node-ai-push-token): NODE_AI_OPERATOR_KEY (the node AI's operator principal, role
+  // developer) + COGNI_OPERATOR_URL; the operator mints from its App, narrowed to this repo. Optional: without
+  // them only git push fails.
+  NODE_AI_OPERATOR_KEY: optionalString,
+  COGNI_OPERATOR_URL: optionalUrl.refine(
+    (url) => !url || url.startsWith("https://"),
+    {
+      message:
+        "COGNI_OPERATOR_URL must be https: the node AI's operator key travels to it",
+    },
+  ),
 
   // Tavily Web Search - Optional
   // Required for research graph web search capability
@@ -464,7 +504,7 @@ export function serverEnv(): ServerEnv {
           if (!isLocal && !dbUrl.searchParams.has("sslmode")) {
             throw new Error(
               `DATABASE_URL points to non-localhost host "${host}" but is missing sslmode= parameter. ` +
-                "Add ?sslmode=require (or stricter) for production safety."
+                "Add ?sslmode=require (or stricter) for production safety.",
             );
           }
         } catch (e) {
@@ -482,7 +522,7 @@ export function serverEnv(): ServerEnv {
           if (!isLocal && !svcUrl.searchParams.has("sslmode")) {
             throw new Error(
               `DATABASE_SERVICE_URL points to non-localhost host "${host}" but is missing sslmode= parameter. ` +
-                "Add ?sslmode=require (or stricter) for production safety."
+                "Add ?sslmode=require (or stricter) for production safety.",
             );
           }
         } catch (e) {
@@ -504,7 +544,7 @@ export function serverEnv(): ServerEnv {
           !existsSync(join(COGNI_REPO_ROOT, ".git"))
         ) {
           throw new Error(
-            `COGNI_REPO_ROOT missing package.json, .cogni/repo-spec.yaml, and .git: ${COGNI_REPO_ROOT}`
+            `COGNI_REPO_ROOT missing package.json, .cogni/repo-spec.yaml, and .git: ${COGNI_REPO_ROOT}`,
           );
         }
       }

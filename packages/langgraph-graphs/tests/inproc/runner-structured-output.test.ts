@@ -3,24 +3,38 @@
 
 /**
  * Module: `@tests/langgraph-graphs/inproc/runner-structured-output`
- * Purpose: Integration test proving structuredOutput flows through runner + real pr-review graph.
+ * Purpose: Integration test proving structuredOutput flows through runner + a minimal no-tool ReAct graph.
  * Scope: Exercises createInProcGraphRunner with responseFormat and mock completionFn. Does NOT make real LLM calls.
  * Invariants: structuredOutput present when responseFormat is set, absent when not.
  * Side-effects: none (all mocked via ALS)
- * Links: runner.ts, pr-review/graph.ts
+ * Links: runner.ts
  * @internal
  */
 
 import type { AiEvent } from "@cogni/ai-core";
+import { MessagesAnnotation } from "@langchain/langgraph";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createPrReviewGraph } from "../../src/graphs/pr-review/graph";
+import type { CreateReactAgentGraphOptions } from "../../src/graphs/types";
 import { createInProcGraphRunner } from "../../src/inproc/runner";
 import type {
   CompletionFn,
   InProcGraphRequest,
   ToolExecFn,
 } from "../../src/inproc/types";
+
+/** Test-local single-call structured-output graph (no tools). */
+function createStructuredTestGraph(opts: CreateReactAgentGraphOptions) {
+  const { llm, responseFormat } = opts;
+  return createReactAgent({
+    llm,
+    tools: [],
+    messageModifier: "Evaluate the input.",
+    ...(responseFormat === undefined && { stateSchema: MessagesAnnotation }),
+    ...(responseFormat !== undefined && { responseFormat }),
+  });
+}
 
 const TestEvalSchema = z.object({
   metrics: z.array(
@@ -40,7 +54,7 @@ const VALID_JSON_RESPONSE = JSON.stringify({
   summary: "Solid PR",
 });
 
-describe("runner + pr-review graph with responseFormat", () => {
+describe("runner + structured-output graph with responseFormat", () => {
   it("returns structuredOutput when responseFormat is provided", async () => {
     const completionFn: CompletionFn = () => ({
       stream: (async function* (): AsyncIterable<AiEvent> {
@@ -61,7 +75,7 @@ describe("runner + pr-review graph with responseFormat", () => {
     };
 
     const { stream, final } = createInProcGraphRunner({
-      createGraph: (opts) => createPrReviewGraph(opts),
+      createGraph: (opts) => createStructuredTestGraph(opts),
       completionFn,
       createToolExecFn: (): ToolExecFn => async () => ({ ok: true, value: {} }),
       toolContracts: [],
@@ -103,7 +117,7 @@ describe("runner + pr-review graph with responseFormat", () => {
     };
 
     const { stream, final } = createInProcGraphRunner({
-      createGraph: (opts) => createPrReviewGraph(opts),
+      createGraph: (opts) => createStructuredTestGraph(opts),
       completionFn,
       createToolExecFn: (): ToolExecFn => async () => ({ ok: true, value: {} }),
       toolContracts: [],

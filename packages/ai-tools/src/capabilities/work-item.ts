@@ -7,5 +7,4 @@ export type {
   WorkItemCapability,
   WorkItemInfo,
   WorkItemQueryParams,
-  WorkItemTransitionResult,
 } from "@cogni/shared-ai-tools";

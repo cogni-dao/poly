@@ -246,7 +246,7 @@ import type {
 
 /**
  * Create a minimal GraphRunRequest for testing.
- * Default graphId is "langgraph:poet".
+ * Default graphId is "langgraph:cogni".
  */
 export function createTestGraphRunRequest(
   overrides: Partial<GraphRunRequest> = {}
@@ -255,7 +255,7 @@ export function createTestGraphRunRequest(
     runId: "test-run-id",
     messages: [],
     modelRef: { providerKey: "platform", modelId: "test-model" },
-    graphId: "langgraph:poet",
+    graphId: "langgraph:cogni",
     ...overrides,
   };
 }
