@@ -40,7 +40,10 @@ import { runGrantConformance } from "@cogni/agent-grants/grants-conformance";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// Each case clones a migrated database; a loaded CI container needs more than the default 5s for the first clone.
+vi.setConfig({ testTimeout: 60_000 });
 
 const migrations = path.resolve(
   import.meta.dirname,
