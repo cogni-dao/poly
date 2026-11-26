@@ -16,6 +16,11 @@ import { hostname } from "node:os";
 import type { ScheduleRunReader } from "@cogni/scheduling";
 import { PostgresScheduleRunReader } from "@cogni/scheduling/adapters/postgres";
 import type { ToolSourcePort } from "@cogni/ai-core";
+import {
+	CitePairRecorder,
+	KnowledgeReadCounter as PostgresKnowledgeReadCounter,
+	type UsageLogEvent,
+} from "@cogni-dao/metrics/usage";
 import type {
 	EdoCapability,
 	KnowledgeCapability,
@@ -104,6 +109,7 @@ import {
 	GITHUB_ADAPTER_VERSION,
 	GitHubWebhookNormalizer,
 	getAppDb,
+	findExecutionScope,
 	getExecutionScope,
 	LangfuseAdapter,
 	LiteLlmAdapter,
@@ -118,6 +124,7 @@ import {
 	ViemTreasuryAdapter,
 } from "@/adapters/server";
 import { ServiceDrizzleAccountService } from "@/adapters/server/accounts/drizzle.adapter";
+import { withReadCounting } from "@/adapters/server/knowledge-usage/counting-knowledge-capability";
 import {
 	AggregatingModelCatalog,
 	ProviderResolver,
@@ -200,6 +207,7 @@ import type {
 	ConnectionBrokerPort,
 	DataSourceRegistration,
 	GovernanceStatusPort,
+	KnowledgeReadCounter,
 	LangfusePort,
 	LlmService,
 	MetricsQueryPort,
@@ -235,7 +243,7 @@ import {
 	getStewardWalletConfig,
 } from "@/shared/config";
 import { serverEnv } from "@/shared/env/server-env";
-import { makeLogger } from "@/shared/observability";
+import { logEvent, makeLogger } from "@/shared/observability";
 import { EVENT_NAMES } from "@/shared/observability/events";
 import { USDC_TOKEN_ADDRESS } from "@/shared/web3";
 import type { EvmOnchainClient } from "@/shared/web3/onchain/evm-onchain-client.interface";
@@ -307,6 +315,8 @@ export interface Container {
 	workItemQuery: WorkItemQueryPort;
 	/** Work item commands — deployed source of truth is the node's Doltgres hub. */
 	workItemCommand: WorkItemCommandPort;
+	/** Write-time daily counters of agent atom reads (story.0061): batched, never blocks or fails the caller. */
+	knowledgeReadCounter: KnowledgeReadCounter;
 	/** Extended CRUD surface used by the authenticated work-item HTTP API. */
 	doltgresWorkItems: WorkItemsDoltgresPort;
 	/** Run event streaming — publish/subscribe via Redis Streams */
@@ -2409,6 +2419,20 @@ function createContainer(): Container {
 
 	const scheduleRunReader = new PostgresScheduleRunReader(db.$client);
 
+	// story.0061: the shared usage writers log through this node's registered events.
+	const usageLog = log.child({ component: "KnowledgeUsage" });
+	const logUsage = ({ event, ...fields }: UsageLogEvent) =>
+		logEvent(usageLog, event, fields);
+	const knowledgeReadCounter = new PostgresKnowledgeReadCounter(
+		serviceDb.$client,
+		logUsage,
+	);
+	const flushReadCounts = () => {
+		void knowledgeReadCounter.flush();
+	};
+	process.on("SIGTERM", flushReadCounts);
+	process.on("SIGINT", flushReadCounts);
+
 	// Worker scheduling (serviceDb, BYPASSRLS)
 	const executionGrantWorkerPort = new DrizzleExecutionGrantWorkerAdapter(
 		serviceDb,
@@ -2494,6 +2518,23 @@ function createContainer(): Container {
 				metricBaseline: moveMetrics.baselines,
 			},
 		);
+		// story.0061: a successful patch also records the (atom, item) pairs it cites; the route and the agent tool share
+		// this patch, and the record never fails or delays it.
+		{
+			const citePairs = new CitePairRecorder(serviceDb.$client, logUsage);
+			const leased = workItemAdapter;
+			workItemAdapter = Object.assign(Object.create(leased), {
+				async patch(
+					...args: Parameters<RuntimeWorkItemAdapter["patch"]>
+				) {
+					const item = await leased.patch(...args);
+					if (args[0].cites?.length) {
+						citePairs.record(item.id, item.revision, args[0].cites);
+					}
+					return item;
+				},
+			}) as RuntimeWorkItemAdapter;
+		}
 		const createKnowledgeBranchClient = () => buildDoltgresClient({
 			connectionString: doltgresUrl,
 			applicationName: `cogni_knowledge_branch_${env.SERVICE_NAME ?? "app"}`,
@@ -2537,6 +2578,15 @@ function createContainer(): Container {
 					}),
 				);
 			};
+		// After the listActiveGoals reassignment, so the spread keeps it (story.0061).
+		knowledgeCapability = withReadCounting(
+			knowledgeCapability,
+			knowledgeReadCounter,
+			() => {
+				const scope = findExecutionScope();
+				return scope ? { principalId: scope.actorUserId } : undefined;
+			},
+		);
 		const edoResolver = new DoltgresEdoResolverAdapter({
 			sql: doltClient,
 			store: knowledgePort,
@@ -2808,6 +2858,7 @@ function createContainer(): Container {
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
 		workItemCommand,
+		knowledgeReadCounter,
 		doltgresWorkItems: workItemAdapter,
 		runStream,
 		nodeStream,

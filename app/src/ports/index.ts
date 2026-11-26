@@ -75,6 +75,11 @@ export type {
 } from "./billing-context";
 export type { Clock } from "./clock.port";
 export type {
+  KnowledgeRead,
+  KnowledgeReadCounter,
+  KnowledgeReaderClass,
+} from "./knowledge-read-counter.port";
+export type {
 	ConnectionBrokerPort,
 	ConnectionScope,
 	ResolvedConnection,
