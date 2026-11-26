@@ -57,6 +57,38 @@ const POLY_WORK_PRIORITIZER: CatalogEntry = {
 };
 
 /**
+ * The released coordinator prompt ends with the host-owned list of registered workflows, rendered when the package was built. That list
+ * names `work-closeout` (not run on this node) and gives the prioritizer its write tools (removed above). Rewrite only that JSON block so the
+ * coordinator is told what this node actually runs; the rest of the released prompt is unchanged. A prompt without the marker is left as released.
+ */
+const WORKFLOWS_MARKER = "Host-owned registered workflows:\n";
+const POLY_UNAVAILABLE_WORKFLOWS: ReadonlySet<string> = new Set([
+  "langgraph:work-closeout",
+]);
+export function rewriteRegisteredWorkflows(prompt: string | undefined): string | undefined {
+  if (!prompt) return prompt;
+  const at = prompt.indexOf(WORKFLOWS_MARKER);
+  if (at < 0) return prompt;
+  const head = prompt.slice(0, at + WORKFLOWS_MARKER.length);
+  try {
+    const workflows = JSON.parse(prompt.slice(at + WORKFLOWS_MARKER.length)) as {
+      id: string;
+      toolIds: string[];
+    }[];
+    const kept = workflows
+      .filter((w) => !POLY_UNAVAILABLE_WORKFLOWS.has(w.id))
+      .map((w) =>
+        w.id === "langgraph:work-prioritizer"
+          ? { ...w, toolIds: [...POLY_WORK_PRIORITIZER.toolIds] }
+          : w
+      );
+    return head + JSON.stringify(kept);
+  } catch {
+    return prompt;
+  }
+}
+
+/**
  * LangGraph catalog - the published shared graphs this node runs: the `cogni` coordinator and the
  * read-only `work-prioritizer`. Poly's own graphs (poly-brain, poly-research) live in `@cogni/poly-graphs`
  * and are composed in the app's node catalog.
@@ -64,7 +96,13 @@ const POLY_WORK_PRIORITIZER: CatalogEntry = {
  * Per CATALOG_SINGLE_SOURCE_OF_TRUTH: graphs are defined here, not in bootstrap.
  */
 export const LANGGRAPH_CATALOG: Readonly<Record<string, CatalogEntry>> = {
-  cogni: { ...SHARED_NODE_CATALOG.cogni, sharedRuntime: true },
+  cogni: {
+    ...SHARED_NODE_CATALOG.cogni,
+    sharedRuntime: true,
+    systemPrompt: rewriteRegisteredWorkflows(
+      (SHARED_NODE_CATALOG.cogni as { systemPrompt?: string }).systemPrompt
+    ),
+  },
   "work-prioritizer": POLY_WORK_PRIORITIZER,
 } as const;
 

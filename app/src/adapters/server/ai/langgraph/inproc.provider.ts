@@ -25,17 +25,32 @@
  * Notes: Discovery is in LangGraphInProcAgentCatalogProvider, not here.
  * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  *
- * SOURCE PORT RECORD (https://cognidao.org/knowledge/port-node-source-once; story.0090, task.0175 Stage 4). This provider is a recorded literal source port, not a sync lane.
- *   - Source symbols and destinations: node-template `app/src/adapters/server/ai/langgraph/inproc.provider.ts` (`LANGGRAPH_PROVIDER_ID`, `CompletionUnitAdapter`,
- *     `SharedCogniDeps`, `LangGraphInProcProvider`) and `resolveNodeSourceContext`, here `inproc.provider.ts`, `source-context.ts` (`loadCogniSourceContext`) and `dispatch.ts`
- *     (`createLangGraphDispatch`), ported by the same minimum hunks as red#88 (head 106f3747). Poly diverges from node-template main in its injected node catalog,
- *     per-request principal tool source and the legacy (non-shared) graph path; those hunks are node-owned composition.
- *   - Reuse: node-template (source), Red and Poly today; task.0175 lists beacon, toks5, levelup and the operator as further holders, so expected reuse is five or more. Change
- *     frequency is high: every guard, scope or catalog change has touched it.
- *   - Prospective package API: the design is the hub atom `inproc-provider-package-design`, in the design inbox https://node-template.cognidao.org/knowledge/inbox/contrib-flock-leader-conductor-6e422af6
- *     (task.0175 Stage 4); its API is the contract and is not restated here. Node-local after extraction: `ExecutionScope` filling, the completion adapter, MCP source wiring and graph prompts.
- *   - Not now: no published package carries the provider yet (agent-grants/host, work-items and sandbox 0.3.0 do not), a codemod cannot move a diverged 700-line file, and a
- *     pinned workflow would rewrite node-owned hunks.
+ * SOURCE PORT RECORD (https://cognidao.org/knowledge/port-node-source-once; story.0090, task.0204 item 4 / task.0175 Stage 4). A recorded literal source port, not a sync lane.
+ *   - Source revision: node-template main 2157e635 (#468, the agent-grants 0.10.0 / sandbox 0.3.0 release), as adopted by red#88 at head d73090d4 (red's merge
+ *     commit once #88 merges; the wiring shape, not a second source of truth). The ported hunks are red's `60609d3` harness state, 3-way merged onto Poly's base.
+ *   - Source symbols and destinations (every literal port; nothing else is copied):
+ *       adapters/server/ai/langgraph/inproc.provider.ts   `LANGGRAPH_PROVIDER_ID`, `CompletionUnitAdapter`, `SharedCogniDeps`, `LangGraphInProcProvider`
+ *                                                          (guard wrap, `offeredToolIds`, terminal-denial abort, coding-audience check, forced-exec recheck)
+ *       adapters/server/ai/langgraph/source-context.ts    `loadCogniSourceContext` (node-template `resolveNodeSourceContext` semantics)
+ *       adapters/server/ai/langgraph/dispatch.ts          `createLangGraphDispatch` (cogni always in process; other graphs keep dev routing)
+ *       adapters/server/ai/execution-scope.ts             the `runId`, `principalId`, `subjectUserId` additions to `ExecutionScope`
+ *       bootstrap/graph-executor.factory.ts               the shared-run composition in `createInProcProvider` (`sharedTools`, authority, `sandboxReady`, source context)
+ *       bootstrap/chat-actor-proof.ts                     the authenticated-actor proof the audience check reads
+ *       bootstrap/capabilities/schedule-model.ts          `bindScheduleModel` (the released schedule tools run with the run's model)
+ *       app/_facades/ai/completion.server.ts              the durable-claim and actor hunks (`acceptanceMode: "workflow-start"`, claim key)
+ *       app/api/internal/graphs/[graphId]/runs/route.ts   the claim-verified receiver hunks
+ *       app/(admin)/_lib/admin-session.ts                 the one AdminSession mint, incl. the cookie-write origin fix (red@512cafc7: Origin vs x-forwarded-host/host)
+ *       shared/observability/db-error-fields.ts           `failureFields`, handed to the agent-grants host as its error-field hook
+ *   - Reuse: node-template (source), Red and Poly today; task.0175 lists beacon, toks5, levelup and the operator as further holders, so expected reuse is five or more.
+ *     Change frequency is high: every guard, scope or catalog change has touched it.
+ *   - Prospective package API: hub atom `inproc-provider-package-design` in the design inbox
+ *     https://node-template.cognidao.org/knowledge/inbox/contrib-flock-leader-conductor-6e422af6 (task.0175 Stage 4); its API is the contract and is not restated here.
+ *     Node-local after extraction: `ExecutionScope` filling, the completion adapter, MCP source wiring, Poly's injected catalog and per-request principal tool source, graph prompts.
+ *   - Why not now: no published package carries the provider yet (agent-grants/host, work-items and sandbox 0.3.0 do not), a codemod cannot move a diverged 700-line file,
+ *     and a pinned workflow would rewrite node-owned hunks.
+ *   - Divergences from the source, all node-owned: the injected node catalog (5th constructor argument) and the per-request principal tool source (Poly); the cogni
+ *     coordinator prompt is rewritten in `packages/langgraph-graphs/src/catalog.ts` to name only the workflows Poly runs (no `work-closeout`; the prioritizer without its
+ *     write tools), because the released prompt embeds the template's workflow list.
  *   - Exit: task.0175 Stage 4. Extraction is forced by the first second cross-repo fix to this file, or by the package release that exports the provider, whichever is first.
  * @internal
  */
