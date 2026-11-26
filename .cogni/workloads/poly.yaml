@@ -21,6 +21,14 @@ metadata:
 containers:
   app:
     image: .
+    variables:
+      # Trusted coding audience (story.0090, hub `node-sandbox-design`): exact authenticated user UUIDs of the callers
+      # allowed to use shared Cogni coding. The union of two sets, none yet verified from correlated server evidence:
+      #   (a) the flock-leader identity the validator uses on poly-test: no Poly candidate key authenticates today
+      #       (every key in .env.cogni is an operator key or expired; Poly serves no /api/v1/agent/me), so its Poly user UUID is unproven;
+      #   (b) the CEO's Poly candidate account: no existing Poly admin approval is logged, so it is unproven.
+      # Empty denies everyone: no chat user can code, and the shell is not offered. Add each UUID in a reviewed change, with its evidence.
+      COGNI_CODING_ACTOR_IDS: ""
     resources:
       requests:
         cpu: "2"
