@@ -572,6 +572,19 @@ describe("migration 0093 (expand): Poly's account grant moves onto the shared pl
   }, 60_000);
 });
 
+describe("migrations 0093 and 0094 fail fast on a blocked lock", () => {
+  it.each(["0093_account_grants_one_plane", "0094_agent_wallet_is_not_a_payee"])("%s sets a transaction-local lock_timeout before its first statement", async (file) => {
+    const text = await readFile(path.join(migrations, `${file}.sql`), "utf8");
+    const first = statements(text)[0] ?? "";
+    expect(first).toMatch(/SET LOCAL lock_timeout = '\d+s'/);
+    await fixture(through92Template, async ({ app }) => {
+      // The setting is transaction-local: it must not leak onto the connection after the batch.
+      await migrate(drizzle(app), { migrationsFolder: migrations });
+      expect((await app`SHOW lock_timeout`)[0]?.lock_timeout).toBe("0");
+    });
+  }, 60_000);
+});
+
 describe("migration 0094: AGENT_WALLET_IS_NOT_A_PAYEE", () => {
   it("refuses a payee wallet that belongs to an agent principal (bound or stored), and allows a person's wallet", async () => {
     await fixture(fullTemplate, async ({ app, service }) => {

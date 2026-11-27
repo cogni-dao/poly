@@ -34,8 +34,14 @@
 -- Deliberately NOT carried (recorded, not hidden): expired grants that were never revoked; closed access-request rows (approved, denied, expired, revoked); the requested end date and
 --   display name of an ask. They are history. Only a grant row ever authorized a read (GRANT_IS_AUTHORITY), and every live or revoked grant is copied. The legacy tables keep all of it
 --   until the contract migration, which must carry it forward or record the CEO's acceptance of the loss. An approved request lives on as `requested_by`.
+-- Rolling-deploy drift (recorded, one roll long): an OLD pod keeps writing the legacy tables after this copy and nothing syncs them. A grant it makes is invisible to the new
+--   plane (fail closed, D2). A REVOKE it makes is invisible too: the copied agent_roles row stays live until its own end date, at most 30 days (D1, the fail-open direction).
+--   task.0210 requires both drift counts at 0 before the drop.
+-- LOCKS: every table named in step 2 and the 11 policy tables (ALTER POLICY) take ACCESS EXCLUSIVE until the batch commits. `SET LOCAL lock_timeout` below makes a blocked lock fail
+--   the migrate fast, with the old release still serving, instead of queueing every read of `users` behind it.
 -- Known narrowing: one account per outside AI per permission until task.5484 (guard G1d). Counts are not assumed: the file never reads production counts at write time.
 --   The contract task requires a read-only count of each guarded shape on candidate and production before the drop.
+SET LOCAL lock_timeout = '5s';--> statement-breakpoint
 GRANT SELECT ON "agent_roles" TO CURRENT_USER;--> statement-breakpoint
 -- The ONE live predicate for an account grant, in SQL (package tail agent_account_grants.sql, 0.11.0, verbatim). SECURITY INVOKER: it sees only what the agent_roles policy lets the caller see.
 CREATE OR REPLACE FUNCTION agent_has_scope(p_account_id text, p_scope text)

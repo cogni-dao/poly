@@ -3,11 +3,13 @@
 --   must find the database already refusing to pay that wallet. #340 promised the guard with the grant-plane PR; `runAgentWalletGuardConformance` runs it in the real-SQL gate.
 -- What it does: one trigger function and one BEFORE INSERT trigger on each payout leaf table (`epoch_distribution_leaves`, `distribution_settlement_leaves`). A leaf whose
 --   `account_lower` is a wallet bound to, or stored on, a user that has an `agent_principals` row raises check_violation (constraint agent_wallet_is_not_a_payee).
--- Safety on production on its own: it adds objects and changes no row. It reads no row at migration time, so it needs no guard and takes no lock beyond a brief one on the two leaf tables.
+-- Safety on production on its own: it adds objects and changes no row. It reads no row at migration time, so it needs no guard. CREATE TRIGGER takes SHARE ROW EXCLUSIVE on the two leaf tables
+--   until the batch commits (it blocks their writes, not their reads; no Poly code writes them today). `SET LOCAL lock_timeout` makes a blocked lock fail the migrate fast.
 --   Existing leaves are untouched; only a new insert is checked. The comparison is case-insensitive on both sides, so it does not need node-template 0043's wallet-lowercasing step.
 -- The function is NOT security definer: leaf rows are written by the BYPASSRLS service role, so the invoker sees users and user_bindings in full. A definer owned by the
 --   RLS-subject migrating role would see zero rows and never fire.
 -- Not carried from 0043 (it changes tables this plane does not own): the wallet lowercasing and unique index on user_bindings, and the link_transactions provider check.
+SET LOCAL lock_timeout = '5s';--> statement-breakpoint
 CREATE OR REPLACE FUNCTION agent_wallet_is_not_a_payee()
 RETURNS trigger
 LANGUAGE plpgsql
