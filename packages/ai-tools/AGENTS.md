@@ -111,7 +111,7 @@ pnpm --filter @cogni/ai-tools build
 
 ## Adoption boundary
 
-Read/query/search contracts and execution delegate to immutable shared-ai-tools. Local Zod 3 operators and the Poly bundle remain local; schema compilation accepts published Zod 4 read contracts.
+Read/query/search and EDO contracts and execution delegate to immutable shared-ai-tools. Published update/artifact tools are registered only with their host writers; graph programs retain their own allowed fields. Local Zod 3 operators and the Poly bundle remain local; schema compilation accepts published Zod 4 read contracts.
 
 ## Notes
 

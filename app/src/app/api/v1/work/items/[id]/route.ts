@@ -16,7 +16,6 @@
  */
 
 import {
-  workItemsDeleteOperation,
   workItemsGetOperation,
   workItemsPatchOperation,
 } from "@cogni/node-contracts";
@@ -27,16 +26,13 @@ import {
 } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 import {
-  deleteWorkItem,
   getWorkItem,
   patchWorkItem,
   WorkItemForbiddenError,
   WorkItemNotFoundError,
-  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import { backendUnavailable } from "../_backend-unavailable";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -114,36 +110,10 @@ export const DELETE = wrapRouteHandlerWithLogging<{
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
     const { id } = await context.params;
-    const parsed = workItemsDeleteOperation.input.safeParse({ id });
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        { status: 400 }
-      );
-    }
-
-    try {
-      const deleted = await deleteWorkItem(id, {
-        id: sessionUser.id,
-      });
-      if (!deleted) {
-        return NextResponse.json(
-          { error: `Work item not found: ${id}` },
-          { status: 404 }
-        );
-      }
-      ctx.log.info({ workItemId: id }, "work.items.delete_success");
-      return NextResponse.json(
-        workItemsDeleteOperation.output.parse({ id, deleted: true })
-      );
-    } catch (error) {
-      if (error instanceof WorkItemForbiddenError) {
-        return NextResponse.json({ error: error.message }, { status: 403 });
-      }
-      if (error instanceof WorkItemsBackendNotReadyError) {
-        return backendUnavailable(ctx, error.reason);
-      }
-      throw error;
-    }
+    ctx.log.info({ event: "work.items.delete_retired", workItemId: id, status: 410 }, "work.items.delete_retired");
+    return NextResponse.json({
+      error: "gone",
+      message: "Deletion is retired. Read the current revision, then PATCH with reason, expectedRevision and set.status=cancelled; history and artifacts are preserved.",
+    }, { status: 410 });
   }
 );

@@ -139,6 +139,8 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   webSearchBoundTool as CatalogBoundTool,
   workItemQueryBoundTool as CatalogBoundTool,
   workItemReadBoundTool as CatalogBoundTool,
+  sharedTool("core__work_item_update"),
+  sharedTool("core__work_item_artifact_record"),
 ];
 
 /**

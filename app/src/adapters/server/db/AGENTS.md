@@ -30,7 +30,7 @@ Database client singletons and tenant-scoping helpers for PostgreSQL access. App
 
 - **Exports (via `client.ts` barrel):** `Database` type, `getAppDb()`, `setTenantContext`, `withTenantScope`
 - **Exports (via `drizzle.service-client.ts`, NOT in barrel):** `getServiceDb()` (service-role singleton, BYPASSRLS). Only `src/auth.ts` and `src/bootstrap/container.ts` may import this (enforced by depcruiser `no-service-db-adapter-import` rule).
-- **Doltgres:** `doltgres/work-items-adapter.ts` implements the durable work-item query/command plane and is wired only from the bootstrap container.
+- **Doltgres:** `doltgres/work-items-adapter.ts` composes published Doltgres content with published PostgreSQL leases via `createPolyWorkItemAdapter`, wired only from bootstrap with the service-role SQL client. Bridge content locking stays until old global-lock writers drain. The generated lease migration and producer stop/expiry proof are activation prerequisites.
 - **Env/Config keys:** `DATABASE_URL`, `DATABASE_SERVICE_URL`
 - **Files considered API:** `client.ts` (safe barrel), `drizzle.service-client.ts` (restricted)
 

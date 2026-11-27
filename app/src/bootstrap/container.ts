@@ -12,6 +12,10 @@
  * @public
  */
 
+import { createDoltgresInboxStates } from "@cogni/knowledge-store/adapters/doltgres";
+import { githubPrFacts } from "@/bootstrap/capabilities/work-item-pr-facts";
+import { resolvePrRepoPin } from "@cogni/work-items";
+import { PostgresWorkItemLeaseAdapter } from "@cogni/work-items/adapters/postgres";
 import { hostname } from "node:os";
 import type { ScheduleRunReader } from "@cogni/scheduling";
 import { PostgresScheduleRunReader } from "@cogni/scheduling/adapters/postgres";
@@ -144,7 +148,7 @@ import {
 } from "@/adapters/server/ai/providers";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
-import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
+import { createPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 import { createJobLeaderLockSession } from "@/adapters/server/db/job-leader-lock.client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
@@ -2530,17 +2534,26 @@ function createContainer(): Container {
 				max: 1,
 			});
 		const workItemClient = buildWorkItemClient();
-		workItemAdapter = new DoltgresPolyWorkItemAdapter(
+    const prRepos = resolvePrRepoPin(env.WORK_ITEMS_PR_REPO);
+    if (prRepos.reason || prRepos.ignored.length) log.warn({
+      event: "adapter.work_items.pr_repo_unpinned", reason: prRepos.reason,
+      ignored: prRepos.ignored.length,
+    }, "Work-item PR repository pin is absent or incomplete");
+		workItemAdapter = createPolyWorkItemAdapter(
 			workItemClient,
+			new PostgresWorkItemLeaseAdapter(serviceDb.$client, { logger: log }),
 			log.child({ component: "doltgres-work-items" }),
 			{
 				recreateClient: buildWorkItemClient,
-				legacyClient: buildWorkItemClient(),
 				// task.0086: pins a patch's cites to commits with lock-free reads on the
 				// knowledge pool, never on the writer connection that holds the lock.
 				entryResolver: createDoltgresEntryResolver(doltClient),
 				// story.0033: a `moves` entry pins the metric's latest good observation as its baseline.
 				metricBaseline: moveMetrics.baselines,
+        prFacts: githubPrFacts,
+        inboxes: createDoltgresInboxStates(doltClient),
+        ...(prRepos.repos.length ? { prRepos: prRepos.repos } : {}),
+        ...(env.APP_BASE_URL ? { hubOrigin: new URL(env.APP_BASE_URL).origin } : {}),
 			},
 		);
 		// story.0061: a successful patch also records the (atom, item) pairs it cites; the route and the agent tool share
@@ -2707,6 +2720,8 @@ function createContainer(): Container {
 		links: createCitationLinksPort(() => knowledgeStorePort),
 		log: (event) => log.warn(event, "work.items.envelope_degraded"),
 		backlogWriter: workItemWriters.backlogWriter,
+		history: workItemAdapter,
+		artifacts: workItemWriters.artifacts,
 	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)

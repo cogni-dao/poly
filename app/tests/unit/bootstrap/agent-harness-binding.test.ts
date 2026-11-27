@@ -4,11 +4,11 @@
 /**
  * Module: `@tests/unit/bootstrap/agent-harness-binding`
  * Purpose: Prove the binding invariants of the shared Cogni harness over Poly's REAL catalog and tool bundles (no fake entries).
- * Scope: Which graph can hold the shell, what the read-only prioritizer may hold, which contracts must declare a lock, and what the
+ * Scope: Which graph can hold the shell, what the program-guarded prioritizer may hold, which contracts must declare a lock, and what the
  *   coordinator prompt tells the model this node runs.
  * Invariants:
  *   - SHELL_ONLY_IN_COGNI: `core__sandbox_shell` is listed only by `cogni`.
- *   - PRIORITIZER_IS_READ_ONLY: every tool the prioritizer lists resolves to a `read_only` contract.
+ *   - PRIORITIZER_USES_PROGRAM: the released program restricts writes; every write has the standard permission requirement.
  *   - EVERY_WRITE_DECLARES_REQUIRES: a contract whose effect is not `read_only` declares `requires` (the guard denies it otherwise).
  *   - PROMPT_MATCHES_NODE: the coordinator prompt names no workflow or write tool this node does not run.
  * Side-effects: none
@@ -34,7 +34,7 @@ describe("shared Cogni harness binding (real catalog and bundles)", () => {
     expect(holders).toEqual(["cogni"]);
   });
 
-  it("gives the work-prioritizer only read_only tools, each resolvable in the node bundle", () => {
+  it("gives the work-prioritizer published guarded writes, each resolvable in the node bundle", () => {
     const toolIds =
       POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
     expect(toolIds.length).toBeGreaterThan(0);
@@ -48,7 +48,7 @@ describe("shared Cogni harness binding (real catalog and bundles)", () => {
         ).toBe(true);
         continue;
       }
-      expect(contract.effect, `${id} effect`).toBe("read_only");
+      if (contract.effect !== "read_only") expect(contract.requires).toMatchObject({ scope: "work_item:transition" });
     }
   });
 
@@ -75,8 +75,8 @@ describe("shared Cogni harness binding (real catalog and bundles)", () => {
     const prompt = POLY_NODE_LANGGRAPH_CATALOG.cogni?.systemPrompt ?? "";
     expect(prompt).toContain("Host-owned registered workflows:");
     expect(prompt).not.toContain("work-closeout");
-    expect(prompt).not.toContain("core__work_item_update");
-    expect(prompt).not.toContain("core__work_item_artifact_record");
+    expect(prompt).toContain("core__work_item_update");
+    expect(prompt).toContain("core__work_item_artifact_record");
     expect(prompt).toContain("langgraph:work-prioritizer");
   });
 });

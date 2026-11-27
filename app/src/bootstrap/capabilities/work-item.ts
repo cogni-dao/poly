@@ -32,6 +32,7 @@ import type {
   WorkItemStatus,
   WorkItemType,
   WriteAttribution,
+  createWorkItemWriters,
 } from "@cogni/work-items";
 import type {
   EnvelopeDegradedEvent,
@@ -40,6 +41,9 @@ import type {
 } from "@cogni/work-items";
 import {
   composeItemEnvelope,
+  createItemRefPorts,
+  recordWorkItemArtifact,
+  artifactsNotConfigured,
   judgeMoveSummaries,
   toWorkItemDto,
   toWorkItemId,
@@ -60,6 +64,8 @@ export interface WorkItemCapabilityDeps {
   readonly links?: ItemLinksPort | undefined;
   /** One event per degraded envelope part (chain or links). */
   readonly log?: ((event: EnvelopeDegradedEvent) => void) | undefined;
+  readonly history?: WorkItemsDoltgresPort;
+  readonly artifacts?: ReturnType<typeof createWorkItemWriters>["artifacts"];
   readonly backlogWriter?: {
     readonly store: Pick<WorkItemsDoltgresPort, "patch">;
     /** Host-built at invocation: the run's acting principal, its requester and the run (task.0133). */
@@ -153,11 +159,15 @@ export function createWorkItemCapability(
         .find((entry) => entry.id === id);
       if (!item) return null;
       // ONE_COMPOSITION: the same `composeItemEnvelope` the HTTP facade calls.
-      return composeItemEnvelope(
-        item,
-        { readings: deps.moveReadings, links: deps.links, log: deps.log },
-        { includeLinks: options?.includeLinks === true },
-      );
+      const stores = deps.artifacts?.deps();
+      return composeItemEnvelope(item, {
+        readings: deps.moveReadings,
+        links: deps.links,
+        artifacts: stores ? { latest: (itemId) => stores.artifacts.latest(itemId) } : undefined,
+        ...createItemRefPorts({ artifacts: stores?.artifacts, history: deps.history }),
+        log: deps.log,
+      }, options);
+
     },
 
     async query(params): Promise<readonly WorkItemInfo[]> {
@@ -174,6 +184,26 @@ export function createWorkItemCapability(
         }),
       };
     },
+
+    ...(deps.artifacts && {
+      async recordArtifact(input: { id: string; body: unknown }) {
+        const artifacts = deps.artifacts;
+        if (!artifacts) throw new Error("Artifact writer unavailable");
+        let attribution: WriteAttribution;
+        try { attribution = artifacts.attribution(); }
+        catch (error) {
+          artifacts.log({ event: "work.items.artifact_refused", status: 403,
+            outcome: "refused", workItemId: input.id, errorCode: "attribution_denied" });
+          throw error;
+        }
+        const stores = artifacts.deps();
+        const result = stores
+          ? await recordWorkItemArtifact(stores, input.id, attribution, input.body)
+          : artifactsNotConfigured(input.id, "write");
+        artifacts.log(result.log, attribution);
+        return { status: result.status, body: result.body };
+      },
+    }),
 
     async patch(input): Promise<WorkItemInfo> {
       const writer = deps.backlogWriter;

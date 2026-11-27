@@ -40,6 +40,7 @@ Drizzle ORM table definitions for all database domains. Provides type-safe schem
 
 ## Public Surface
 
+- **Root export:** `workItemLeases` — PostgreSQL coordination, service-role only; generated migration enables and forces RLS with no app policy.
 - **Exports (via subpath exports):**
   - `@cogni/db-schema/agent-access-requests` - Hashed, one-time owner approval requests for agent capabilities
   - `@cogni/db-schema/agent-capability-grants` - Expiring, revocable principal delegation grants

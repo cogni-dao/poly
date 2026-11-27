@@ -3,8 +3,8 @@
 
 /**
  * Module: `@tests/unit/adapters/work-items-cites-wiring`
- * Purpose: Prove the REAL `DoltgresPolyWorkItemAdapter` over the REAL published content adapter enforces cites (task.0086).
- * Scope: Builds the adapter with the options `container.ts` passes (`recreateClient`, `legacyClient`, `entryResolver`); only the SQL pool and the resolver are fakes. No database, no containers.
+ * Purpose: Prove the REAL `createPolyWorkItemAdapter` over the REAL published content adapter enforces cites (task.0086).
+ * Scope: Builds the adapter with the options `container.ts` passes (`recreateClient`, `entryResolver`); only the SQL pool and the resolver are fakes. No database, no containers.
  * Invariants:
  *   - CITES_REACH_THE_ENFORCER: a patch carrying cites calls the resolver (rule "cite") with those refs; an unresolved id rejects before any UPDATE or commit.
  *   - NO_RESOLVER_NO_CITES: with no resolver wired, a patch with cites rejects with CitesUnsupportedError before any statement.
@@ -18,7 +18,7 @@ import { EntryUnresolvedError } from "@cogni/work-items";
 import type { Sql } from "postgres";
 import { describe, expect, it, vi } from "vitest";
 
-import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
+import { createPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 import { makeFakeDoltgresSql } from "../../_fakes/fake-doltgres-sql";
 
 const ROW = {
@@ -48,9 +48,8 @@ function build(entryResolver?: { resolve: (...args: unknown[]) => unknown }) {
   };
   const pool = () => makeFakeDoltgresSql(respond, queries) as Sql;
   // The options container.ts passes to the Poly wrapper.
-  const adapter = new DoltgresPolyWorkItemAdapter(pool(), undefined, {
+  const adapter = createPolyWorkItemAdapter(pool(), { getMany: async () => new Map() } as never, undefined, {
     recreateClient: pool,
-    legacyClient: pool(),
     ...(entryResolver ? { entryResolver: entryResolver as never } : {}),
   });
   return { adapter, queries };
@@ -63,7 +62,7 @@ const input = {
   set: { title: "changed" },
 } as never;
 
-describe("DoltgresPolyWorkItemAdapter cites enforcement (task.0086)", () => {
+describe("createPolyWorkItemAdapter cites enforcement (task.0086)", () => {
   it("calls the resolver with the cites and writes nothing when one is unresolved", async () => {
     const resolve = vi.fn().mockRejectedValue(new EntryUnresolvedError(["no-such-atom-0086"]));
     const { adapter, queries } = build({ resolve });

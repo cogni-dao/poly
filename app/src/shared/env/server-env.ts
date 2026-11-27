@@ -229,6 +229,8 @@ export const serverSchema = z.object({
   // Per knowledge-data-plane spec: versioned knowledge store for agent domain expertise.
   // Writer URL used by knowledge tools (auto-commit on write). Reader URL for read-only agents.
   DOLTGRES_URL: optionalUrl,
+  // Optional comma-separated PR gate repository pins; the package validates them.
+  WORK_ITEMS_PR_REPO: z.string().optional(),
 
   // DoltHub credentials — service-side push of knowledge hubs to DoltHub
   // remote (cogni-dao/knowledge-<node>). v0 push uses DoltHub Dolt creds

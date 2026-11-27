@@ -145,7 +145,6 @@
     "wagmi": "2.19.5",
     "zod": "^4.1.12",
     "zustand": "^5.0.9",
-    "@cogni/legacy-work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.8/cogni-dao-work-items-0.1.8.tgz",
     "@cogni/shared-ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.27.0/cogni-dao-ai-tools-0.27.0.tgz",
     "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.27.0/cogni-dao-work-items-0.27.0.tgz",
     "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.27.0/cogni-dao-knowledge-store-0.27.0.tgz",

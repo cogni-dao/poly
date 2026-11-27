@@ -115,7 +115,7 @@ describe("agent access discovery", () => {
       ],
       releaseWorkItem: [
         "DELETE",
-        "https://poly.example.test/api/v1/work/items/{id}/claims?runId={runId}",
+        "https://poly.example.test/api/v1/work/items/{id}/claims?runId={runId}&leaseToken={leaseToken}",
       ],
       getWorkItemCoordination: [
         "GET",

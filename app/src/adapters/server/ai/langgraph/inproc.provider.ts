@@ -49,8 +49,8 @@
  *   - Why not now: no published package carries the provider yet (agent-grants/host, work-items and sandbox 0.3.0 do not), a codemod cannot move a diverged 700-line file,
  *     and a pinned workflow would rewrite node-owned hunks.
  *   - Divergences from the source, all node-owned: the injected node catalog (5th constructor argument) and the per-request principal tool source (Poly); the cogni
- *     coordinator prompt is rewritten in `packages/langgraph-graphs/src/catalog.ts` to name only the workflows Poly runs (no `work-closeout`; the prioritizer without its
- *     write tools), because the released prompt embeds the template's workflow list.
+ *     coordinator prompt is rewritten in `packages/langgraph-graphs/src/catalog.ts` to name only the workflows Poly runs (no `work-closeout`; the prioritizer keeps its released program and
+ *     guarded write tools), because the released prompt embeds the template's workflow list.
  *   - Exit: task.0175 Stage 4. Extraction is forced by the first second cross-repo fix to this file, or by the package release that exports the provider, whichever is first.
  * @internal
  */
@@ -225,7 +225,7 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
       return this.createErrorResult(runId, requestId, "not_found");
     }
 
-    if (entry.sharedRuntime) return this.runSharedCogni(req, ctx);
+    if (entry.sharedRuntime) return this.runSharedGraph(graphName, req, ctx);
 
     this.log.debug(
       { runId, graphName, model, messageCount: messages.length },
@@ -419,7 +419,8 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
     return { stream, final: flatFinal };
   }
 
-  private runSharedCogni(
+  private runSharedGraph(
+    graphName: string,
     req: GraphRunRequest,
     ctx?: ExecutionContext,
   ): GraphRunResult {
@@ -429,11 +430,12 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
     const actor = ctx?.actorUserId;
     // Identity, program, tools and factory come from the released entry; the system prompt comes from THIS node's catalog entry,
     // whose coordinator workflow list names only what this node runs (packages/langgraph-graphs/src/catalog.ts).
-    const shared = SHARED_NODE_CATALOG.cogni;
+    const shared = SHARED_NODE_CATALOG[graphName as keyof typeof SHARED_NODE_CATALOG];
     const entry = {
       ...shared,
+      toolIds: this.catalog[graphName]?.toolIds ?? [],
       systemPrompt:
-        (this.catalog.cogni as { systemPrompt?: string } | undefined)
+        (this.catalog[graphName] as { systemPrompt?: string } | undefined)
           ?.systemPrompt ?? shared.systemPrompt,
     };
     const deps = this.sharedCogni;
@@ -640,7 +642,7 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
       }
     })();
     const final = inner.then(
-      (result) => this.mapToGraphFinal(result.final, runId, requestId, "cogni"),
+      (result) => this.mapToGraphFinal(result.final, runId, requestId, graphName),
       () => ({
         ok: false as const,
         runId,

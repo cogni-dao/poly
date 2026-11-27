@@ -14,6 +14,7 @@
  * @internal
  */
 
+import type { WorkItemLease } from "@cogni/work-items";
 import type {
 	WorkItemsCreateInput as ContractCreateInput,
 	WorkItemsPatchInput as ContractPatchInput,
@@ -418,27 +419,12 @@ export async function patchWorkItem(
 	}
 }
 
-export async function deleteWorkItem(
-	id: string,
-	sessionUser: { id: string },
-): Promise<boolean> {
-	const container = getContainer();
-	try {
-		return await container.doltgresWorkItems.delete(
-			toWorkItemId(id),
-			sessionUser.id,
-		);
-	} catch (error) {
-		rethrowBackendError(error);
-	}
-}
-
 export async function claimWorkItem(input: {
 	id: string;
 	runId: string;
 	command: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.claim({
@@ -447,7 +433,7 @@ export async function claimWorkItem(input: {
 			command: input.command,
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);
@@ -457,18 +443,20 @@ export async function claimWorkItem(input: {
 }
 
 export async function releaseWorkItem(input: {
+	leaseToken: string;
 	id: string;
 	runId: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.release({
+			leaseToken: input.leaseToken,
 			id: toWorkItemId(input.id),
 			runId: input.runId,
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);
@@ -478,20 +466,22 @@ export async function releaseWorkItem(input: {
 }
 
 export async function heartbeatWorkItem(input: {
+	leaseToken: string;
 	id: string;
 	runId: string;
 	command?: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.heartbeat({
+			leaseToken: input.leaseToken,
 			id: toWorkItemId(input.id),
 			runId: input.runId,
 			...(input.command !== undefined && { command: input.command }),
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if (error instanceof WorkItemNotFoundError) throw error;
 		rethrowBackendError(error);

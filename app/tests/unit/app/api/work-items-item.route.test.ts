@@ -49,7 +49,7 @@ vi.mock("@/bootstrap/http", () => ({
 			),
 }));
 
-import { PATCH } from "@/app/api/v1/work/items/[id]/route";
+import { DELETE, PATCH } from "@/app/api/v1/work/items/[id]/route";
 
 function request(body: unknown) {
 	return new NextRequest("http://localhost/api/v1/work/items/task.5001", {
@@ -235,4 +235,29 @@ describe("PATCH /api/v1/work/items/:id", () => {
 			errorCode: "metric_baseline_unavailable",
 		});
 	});
+});
+
+
+describe("Retired DELETE and canonical gated PATCH", () => {
+  beforeEach(() => vi.clearAllMocks());
+  it("authenticated DELETE returns 410 without calling any writer", async () => {
+    const response = await DELETE(new NextRequest("http://localhost/api/v1/work/items/task.5001", { method: "DELETE" }), context);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({ error: "gone", message: expect.stringContaining("expectedRevision") });
+    expect(mockPatchWorkItem).not.toHaveBeenCalled();
+  });
+  it("forwards cancellation with reason and compare-and-set", async () => {
+    mockPatchWorkItem.mockRejectedValue(Object.assign(new Error("stale"), { name: "WorkItemRevisionConflictError", id: "task.5001", expectedRevision: 4, currentRevision: 5 }));
+    const response = await PATCH(request({ expectedRevision: 4, reason: "Superseded by approved plan", set: { status: "cancelled" } }), context);
+    expect(response.status).toBe(409);
+    expect(mockPatchWorkItem).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 4, reason: "Superseded by approved plan", set: { status: "cancelled" } }), { id: SESSION_USER.id }, { actor: SESSION_USER.id });
+  });
+  it("preserves gate refusal and unavailable-facts responses", async () => {
+    for (const [name, status, errorCode] of [["WorkItemGateUnmetError", 409, "gate_unmet"], ["WorkItemGateFactsUnavailableError", 503, "gate_facts_unavailable"]] as const) {
+      mockPatchWorkItem.mockRejectedValue(Object.assign(new Error("gate"), { name, id: "task.5001", from: "needs_implement", to: "needs_validation", missing: "implementation_review" }));
+      const response = await PATCH(request({ reason: "Request move", set: { status: "needs_validation" } }), context);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ errorCode });
+    }
+  });
 });

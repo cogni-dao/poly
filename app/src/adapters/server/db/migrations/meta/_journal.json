@@ -659,6 +659,13 @@
       "when": 1795713879177,
       "tag": "0093_knowledge_usage_counters",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1795796410295,
+      "tag": "0094_little_famine",
+      "breakpoints": true
     }
   ]
 }

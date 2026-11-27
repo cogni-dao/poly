@@ -37,28 +37,15 @@ interface CatalogEntry {
   readonly systemPrompt?: string;
 }
 
-/**
- * POLY's work-prioritizer: the released entry with its write tools (update, artifact record) removed, so it is read-only.
- *
- * Triage writes are off on poly until the program plumbing (program, sourceContext, run hooks) is ported.
- * POLY's in-proc runner does not pass `program` to the graph factory, so the released prioritizer would run
- * as a plain ReAct agent holding the full-schema `core__work_item_update` with no triage guard, no
- * five-change cap and no receipt. `core__work_item_read` stays; the update and artifact-record tools are neither offered nor bound.
- */
-const SHARED_WORK_PRIORITIZER = SHARED_NODE_CATALOG["work-prioritizer"];
+/** The published triage program owns its write-field restrictions and five-item budget. */
 const POLY_WORK_PRIORITIZER: CatalogEntry = {
-  ...SHARED_WORK_PRIORITIZER,
-  toolIds: SHARED_WORK_PRIORITIZER.toolIds.filter(
-    (id) =>
-      id !== "core__work_item_update" &&
-      id !== "core__work_item_artifact_record"
-  ),
-  systemPrompt: `${SHARED_WORK_PRIORITIZER.systemPrompt} READ-ONLY ON THIS NODE: triage writes are off, so core__work_item_update and core__work_item_artifact_record are not available. Do not try to change any item. Read as above, then report in your final answer the routes, scores and cancels you would make, one line per item, with the reason for each. Reporting them satisfies the run; ignore the instruction to write.`,
+  ...SHARED_NODE_CATALOG["work-prioritizer"],
+  sharedRuntime: true,
 };
 
 /**
  * The released coordinator prompt ends with the host-owned list of registered workflows, rendered when the package was built. That list
- * names `work-closeout` (not run on this node) and gives the prioritizer its write tools (removed above). Rewrite only that JSON block so the
+ * names `work-closeout` (not run on this node). Rewrite only that JSON block so the
  * coordinator is told what this node actually runs; the rest of the released prompt is unchanged. A prompt without the marker is left as released.
  */
 const WORKFLOWS_MARKER = "Host-owned registered workflows:\n";
@@ -90,7 +77,7 @@ export function rewriteRegisteredWorkflows(prompt: string | undefined): string |
 
 /**
  * LangGraph catalog - the published shared graphs this node runs: the `cogni` coordinator and the
- * read-only `work-prioritizer`. Poly's own graphs (poly-brain, poly-research) live in `@cogni/poly-graphs`
+ * program-guarded `work-prioritizer`. Poly's own graphs (poly-brain, poly-research) live in `@cogni/poly-graphs`
  * and are composed in the app's node catalog.
  *
  * Per CATALOG_SINGLE_SOURCE_OF_TRUTH: graphs are defined here, not in bootstrap.

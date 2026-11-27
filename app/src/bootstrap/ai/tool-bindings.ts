@@ -73,6 +73,10 @@ import {
   createKnowledgeSearchImplementation,
   createWorkItemQueryImplementation,
   createWorkItemReadImplementation,
+  createWorkItemUpdateImplementation,
+  createWorkItemArtifactRecordImplementation,
+  WORK_ITEM_UPDATE_NAME,
+  WORK_ITEM_ARTIFACT_RECORD_NAME,
   GOAL_LIST_NAME,
   getCurrentTimeImplementation,
   sandboxShellUnavailableImplementation,
@@ -210,6 +214,12 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
       nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,
 
+    [WORK_ITEM_UPDATE_NAME]: createWorkItemUpdateImplementation({
+      workItemCapability: deps.workItemCapability,
+    }) as AnyToolImplementation,
+    [WORK_ITEM_ARTIFACT_RECORD_NAME]: createWorkItemArtifactRecordImplementation({
+      workItemCapability: deps.workItemCapability,
+    }) as AnyToolImplementation,
     [WORK_ITEM_READ_NAME]: createWorkItemReadImplementation({
       workItemCapability: deps.workItemCapability,
       nodePublicOrigin: deps.nodePublicOrigin,
