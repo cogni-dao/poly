@@ -50,6 +50,12 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
   let leaseSql: Sql;
 	let sql: Sql;
 	let dbUrl: string;
+  const fixturePools: Sql[] = [];
+  const fixtureClient = () => {
+    const pool = postgres(dbUrl, { max: 1, fetch_types: false });
+    fixturePools.push(pool);
+    return pool;
+  };
 	const stageLogger = {
 		info: (fields: unknown, message?: string) =>
 			console.info(message, JSON.stringify(fields)),
@@ -96,7 +102,8 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 
 	afterAll(async () => {
 		if (sql) await sql.end({ timeout: 5 });
-		if (container) await container.stop();
+		await Promise.all(fixturePools.map((pool) => pool.end({ timeout: 0 }).catch(() => undefined)));
+    if (container) await container.stop();
     if (leaseSql) await leaseSql.end({ timeout: 0 });
     if (leaseContainer) await leaseContainer.stop();
 	});
@@ -378,6 +385,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 
 			const adapter = withWorkItemLeases(new DoltgresWorkItemAdapter(sql, {
 			logger: stageLogger,
+        recreateClient: fixtureClient,
 				lockWaitMs: 250,
 				lockRetryMs: 25,
     }), new PostgresWorkItemLeaseAdapter(leaseSql));
@@ -470,6 +478,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 	it("commits only work_items while preserving and deterministically cleaning dirty knowledge", async () => {
 		const adapter = withWorkItemLeases(new DoltgresWorkItemAdapter(sql, {
 			logger: stageLogger,
+      recreateClient: fixtureClient,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
 			queryTimeoutMs: 5_000,
