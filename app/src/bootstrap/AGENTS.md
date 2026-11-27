@@ -59,7 +59,7 @@ operator dependency-cruiser rules do not run in this repository.
   - `runGovernanceSchedulesSyncJob()` - Job: advisory lock + governance schedule sync via container
   - `startGovernanceSyncOnBoot(log)` - Direct, bounded, observable schedule reconcile at process startup
   - `createStreamRedisClient(url)` - Lazy stream Redis client with a native error listener
-  - `getContainer()` - Singleton DI container with logger and config
+  - `getContainer()` - Process-wide singleton DI container with logger and config (held in the `globalThis` registry, `shared/util/process-singleton.ts`, so the instrumentation hook, pages and route handlers share ONE container, one job elector and one DB pool set — bug.5066)
   - `resetContainer()` - Reset singleton (tests only)
   - `resolveQualificationDependencies(fixture, sidecarUrl, signal, deadlineAt)` — existing RLS ledger and authorized bounded paper executor composition; action-owned app-role connection with dispose(), native deadline cancellation and one transient backend maximum per process
   - `createPaperCompanionTransport(binding, deadlineAt, timeoutError)` — configured native fetch resource; one observation budget, no redirects and a final dispatch fence; feature service owns wire validation and version/readiness/version policy

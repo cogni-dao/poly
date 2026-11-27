@@ -19,6 +19,7 @@ import { createServiceDbClient } from "@cogni/db-client/service";
 import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
 import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+import { processSingleton } from "@/shared/util/process-singleton";
 
 import {
   resolveServiceRoleBudget,
@@ -35,7 +36,7 @@ export const SHARED_TIER_READ_POOL_MAX = 1;
 // Lazy service-role connection (BYPASSRLS) for auth, workers, and bootstrap.
 // DATABASE_SERVICE_URL is required in all environments (no fallback).
 // Read-path service queries use the separate pool in drizzle.service-read-client.ts.
-let _serviceDb: Database | null = null;
+// ONE_PER_PROCESS (bug.5066): held in the process registry, not a module variable.
 
 /**
  * Per-pod service_poly budget (bug.5064): the service pool, the read pool and the
@@ -83,12 +84,12 @@ export function logServicePoolConfigured(
 }
 
 function createServiceDb(): Database {
-  if (!_serviceDb) {
+  return processSingleton("db.service", () => {
     const env = serverEnv();
     // Pool budget: declared DB_SERVICE_POOL_MAX when injected, else default 1.
     // Backend math: packages/db-client/src/build-client.ts.
     const budget = resolveServiceRoleBudgetFromEnv();
-    _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
+    const db = createServiceDbClient(env.DATABASE_SERVICE_URL, {
       max: budget.serviceMax,
     });
     logServicePoolConfigured(
@@ -96,8 +97,8 @@ function createServiceDb(): Database {
       env.DB_SERVICE_POOL_MAX ?? SHARED_TIER_SERVICE_POOL_MAX,
       budget
     );
-  }
-  return _serviceDb;
+    return db;
+  });
 }
 
 export const getServiceDb = createServiceDb;
