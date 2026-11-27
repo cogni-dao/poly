@@ -74,6 +74,8 @@ export interface InstantQueryParams {
   query: string;
   /** Evaluation timestamp (optional, defaults to now) */
   time?: Date;
+  /** Caller cancellation; combined with the adapter's own timeout (optional) */
+  signal?: AbortSignal;
 }
 
 /**

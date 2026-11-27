@@ -42,45 +42,20 @@ const AVAILABLE_GRAPHS: readonly GraphOption[] = [
     description: "Prediction market analyst with live market data",
   },
   {
-    graphId: "langgraph:brain" satisfies GraphId,
-    name: "Brain",
-    description: "Code-aware assistant with repo access",
+    graphId: "langgraph:cogni" satisfies GraphId,
+    name: "Cogni",
+    description: "Coordinates node duties and answers questions",
   },
   {
-    graphId: "langgraph:poet" satisfies GraphId,
-    name: "Poet",
-    description: "Poetic AI assistant with structured verse",
-  },
-  {
-    graphId: "langgraph:ponderer" satisfies GraphId,
-    name: "Ponderer",
-    description: "Philosophical thinker",
-  },
-  {
-    graphId: "langgraph:research" satisfies GraphId,
-    name: "Research",
-    description: "Deep research with web search",
-  },
-  {
-    graphId: "langgraph:browser" satisfies GraphId,
-    name: "Browser",
-    description: "Web browsing agent with Playwright MCP",
-  },
-  {
-    graphId: "langgraph:frontend-tester" satisfies GraphId,
-    name: "Frontend Tester",
-    description: "QA agent — tests web UIs via Playwright",
-  },
-  {
-    graphId: "langgraph:operating-review" satisfies GraphId,
-    name: "Operating Review",
+    graphId: "langgraph:work-prioritizer" satisfies GraphId,
+    name: "Work Prioritizer",
     description:
-      "Periodic review — triages backlog, flags risks, produces structured briefs",
+      "Reads open work and reports the routes and scores it would make",
   },
 ];
 
 /** Default graph ID - exported for page initialization */
-export const DEFAULT_GRAPH_ID: GraphId = "langgraph:brain";
+export const DEFAULT_GRAPH_ID: GraphId = "langgraph:poly-brain";
 
 export interface ChatComposerExtrasProps {
   selectedModel: string;
@@ -115,10 +90,10 @@ export function ChatComposerExtras({
         setLocalModel(validated);
         // Find the matching ref from API models (defaults to platform provider)
         const matchedModel = modelsQuery.data.models.find(
-          (m) => m.ref.modelId === validated
+          (m) => m.ref.modelId === validated,
         );
         onModelChange(
-          matchedModel?.ref ?? { providerKey: "platform", modelId: validated }
+          matchedModel?.ref ?? { providerKey: "platform", modelId: validated },
         );
       }
     }

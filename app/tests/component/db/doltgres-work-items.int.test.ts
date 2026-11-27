@@ -9,12 +9,13 @@
  * tests cannot see Dolt branch semantics; bug.5358 shipped green against them.
  */
 
+import { PostgresWorkItemLeaseAdapter } from "@cogni/work-items/adapters/postgres";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { toWorkItemId } from "@cogni/work-items";
+import { withWorkItemLeases, toWorkItemId } from "@cogni/work-items";
 import postgres, { type Sql } from "postgres";
 import {
 	GenericContainer,
@@ -26,8 +27,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	DoltgresWorkItemAdapter,
 	WorkItemsBusyError,
-} from "@cogni/legacy-work-items/adapters/doltgres";
-import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
+} from "@cogni/work-items/adapters/doltgres";
+import { createPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
@@ -45,8 +46,16 @@ const PASSWORD = "doltgres";
 
 describe("Doltgres 0.57.3 work-item acceptance", () => {
 	let container: StartedTestContainer;
+  let leaseContainer: StartedTestContainer;
+  let leaseSql: Sql;
 	let sql: Sql;
 	let dbUrl: string;
+  const fixturePools: Sql[] = [];
+  const fixtureClient = () => {
+    const pool = postgres(dbUrl, { max: 1, fetch_types: false });
+    fixturePools.push(pool);
+    return pool;
+  };
 	const stageLogger = {
 		info: (fields: unknown, message?: string) =>
 			console.info(message, JSON.stringify(fields)),
@@ -84,11 +93,19 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			stdio: "pipe",
 		});
 		sql = postgres(dbUrl, { max: 1, fetch_types: false });
+    leaseContainer = await new GenericContainer("postgres:16-alpine")
+      .withEnvironment({ POSTGRES_PASSWORD: PASSWORD }).withExposedPorts(5432)
+      .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2)).start();
+    leaseSql = postgres(`postgres://postgres:${PASSWORD}@${leaseContainer.getHost()}:${leaseContainer.getMappedPort(5432)}/postgres`);
+    await leaseSql.unsafe(readFileSync(path.join(REPO_ROOT, "app/src/adapters/server/db/migrations/0094_little_famine.sql"), "utf8"));
 	}, 180_000);
 
 	afterAll(async () => {
 		if (sql) await sql.end({ timeout: 5 });
-		if (container) await container.stop();
+		await Promise.all(fixturePools.map((pool) => pool.end({ timeout: 0 }).catch(() => undefined)));
+    if (container) await container.stop();
+    if (leaseSql) await leaseSql.end({ timeout: 0 });
+    if (leaseContainer) await leaseContainer.stop();
 	});
 
 	it("repairs knowledge metric columns missing behind a recorded ledger (bug.0015)", async () => {
@@ -146,48 +163,63 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		}
 	}, 120_000);
 
-  it("composes published scores and v1 leases without changing protected content", async () => {
+  it("composes published scores and token leases without changing protected content", async () => {
     const pools: Sql[] = [];
     const client = () => {
       const pool = postgres(dbUrl, { max: 1, fetch_types: false });
       pools.push(pool);
       return pool;
     };
-    const adapter = new DoltgresPolyWorkItemAdapter(client(), stageLogger, { legacyClient: client(), recreateClient: client });
+    const adapter = createPolyWorkItemAdapter(client(), new PostgresWorkItemLeaseAdapter(leaseSql), stageLogger, { recreateClient: client });
     const id = toWorkItemId("task.9598");
     const owner = "baseline-owner";
     const collaborator = "baseline-collaborator";
     const scores = { goal: { v: 3 }, time: { v: 2 }, unblocks: { v: 3 }, ease: { v: 4, ev: "https://example.org/proof?q=1#section" }, confidence: { v: 3 }, agent: { v: 3 } };
     try {
-      const created = await adapter.create({ id, type: "task", title: "Shared evaluation composition" }, owner);
-      const scored = await adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores } }, collaborator);
+      const created = await adapter.create({ id, type: "task", title: "Shared evaluation composition" }, { actor: owner });
+      const scored = await adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores } }, { actor: collaborator });
       expect(scored.scores).toEqual(scores);
-      await expect(adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
+      await expect(adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores: null } }, { actor: collaborator })).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
       // bug.0019 / bug.5619: the adapter no longer gates on creator; a non-creator may patch any field.
-      const foreign = await adapter.patch({ id, expectedRevision: scored.revision, reason: "test change", set: { title: "Non-creator content" } }, collaborator);
+      const foreign = await adapter.patch({ id, expectedRevision: scored.revision, reason: "test change", set: { title: "Non-creator content" } }, { actor: collaborator });
       expect(foreign.title).toBe("Non-creator content");
       expect(await adapter.get(id)).toMatchObject({ title: "Non-creator content", scores, revision: foreign.revision });
       const claimed = await adapter.claim({ id, runId: "baseline-run", command: "/baseline", principalId: owner });
-      expect(claimed.claimedByRun).toBe("baseline-run");
-      expect(claimed.scores).toEqual(scores);
-      expect(claimed.revision).toBeGreaterThan(foreign.revision);
+      expect(claimed.runId).toBe("baseline-run");
+      const retry = await adapter.claim({ id, runId: "baseline-run", command: "retry", principalId: owner });
+      expect(retry).toEqual(claimed);
+      const wrongToken = "00000000-0000-4000-8000-000000000099";
+      await expect(adapter.heartbeat({ id, runId: "baseline-run", principalId: owner, leaseToken: wrongToken })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
+      await expect(adapter.release({ id, runId: "baseline-run", principalId: collaborator, leaseToken: claimed.leaseToken })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
+
+      expect((await adapter.get(id))?.scores).toEqual(scores);
+      expect((await adapter.get(id))?.revision).toBe(foreign.revision);
       expect((await adapter.get(id))?.claimedByRun).toBe("baseline-run");
       expect((await adapter.list({ ids: [id] })).items[0]).toMatchObject({ scores, claimedByRun: "baseline-run" });
       await expect(adapter.claim({ id, runId: "intruder", command: "/baseline", principalId: collaborator })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
-      const beat = await adapter.heartbeat({ id, runId: "baseline-run", principalId: owner });
-      expect(beat.scores).toEqual(scores);
-      const released = await adapter.release({ id, runId: "baseline-run", principalId: owner });
-      expect(released.claimedByRun).toBeUndefined();
-      expect(released.scores).toEqual(scores);
-      const cleared = await adapter.patch({ id, expectedRevision: released.revision, reason: "test change", set: { scores: null } }, collaborator);
+      const beat = await adapter.heartbeat({ id, runId: "baseline-run", principalId: owner, leaseToken: claimed.leaseToken });
+      expect(beat.active).toBe(true);
+      const released = await adapter.release({ id, runId: "baseline-run", principalId: owner, leaseToken: claimed.leaseToken });
+      expect(released.active).toBe(false);
+      expect((await adapter.release({ id, runId: "baseline-run", principalId: owner, leaseToken: claimed.leaseToken })).active).toBe(false);
+      const successor = await adapter.claim({ id, runId: "next-run", command: "implement", principalId: collaborator });
+      expect(successor.leaseToken).not.toBe(claimed.leaseToken);
+      await expect(adapter.release({ id, runId: "baseline-run", principalId: owner, leaseToken: claimed.leaseToken })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
+      await leaseSql.unsafe("UPDATE work_item_leases SET expires_at = clock_timestamp() - interval '1 second' WHERE work_item_id = $1", [id]);
+      await expect(adapter.heartbeat({ id, runId: "next-run", principalId: collaborator, leaseToken: successor.leaseToken })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
+      expect((await adapter.get(id))?.claimedByRun).toBeUndefined();
+
+      expect((await adapter.get(id))?.scores).toEqual(scores);
+      const cleared = await adapter.patch({ id, expectedRevision: foreign.revision, reason: "test change", set: { scores: null } }, { actor: collaborator });
       expect(cleared.scores).toBeUndefined();
-      await expect(adapter.delete(id, owner)).resolves.toBe(true);
+      await adapter.patch({ id, expectedRevision: cleared.revision, reason: "Finish fixture", set: { status: "cancelled" } }, { actor: owner });
+      expect((await adapter.get(id))?.status).toBe("cancelled");
     } finally {
       await Promise.all(pools.map((pool) => pool.end({ timeout: 0 }).catch(() => undefined)));
     }
   }, 60_000);
 
-	it("creates, lists, patches, coordinates, and deletes through Dolt branches", async () => {
+	it("creates and patches content while PostgreSQL owns coordination", async () => {
 		const createWorkItemClient = () =>
 			postgres(dbUrl, { max: 1, fetch_types: false });
 		// An EXPLICIT read pool, so `recreateClient` below stays a pure
@@ -197,7 +229,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		// lane; mixing it in here would mean `sql` sometimes pointed at the read
 		// pool and the pool-death assertions would kill the wrong connection.
 		const readSql = createWorkItemClient();
-		const adapter = new DoltgresWorkItemAdapter(sql, {
+		const adapter = withWorkItemLeases(new DoltgresWorkItemAdapter(sql, {
 			logger: stageLogger,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
@@ -207,20 +239,20 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				sql = createWorkItemClient();
 				return sql;
 			},
-		});
+    }), new PostgresWorkItemLeaseAdapter(leaseSql));
 		const id = toWorkItemId("task.9501");
 		const principalId = "doltgres-acceptance-agent";
 
 		const created = await adapter.create(
 			{ id, type: "task", title: "Doltgres acceptance" },
-			principalId,
+			{ actor: principalId },
 		);
 		expect(created.id).toBe(id);
 		expect((await adapter.list({ ids: [id] })).items).toHaveLength(1);
 
 		const patched = await adapter.patch(
 			{ id, reason: "test change", set: { title: "Doltgres accepted" } },
-			principalId,
+			{ actor: principalId },
 		);
 		expect(patched.title).toBe("Doltgres accepted");
 
@@ -234,7 +266,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await blocker.unsafe("SELECT pg_advisory_lock(5001001)");
 			await expect(adapter.get(id)).resolves.toMatchObject({ id });
 			await expect(
-				adapter.patch({ id, reason: "test change", set: { title: "blocked" } }, principalId),
+				adapter.patch({ id, reason: "test change", set: { title: "blocked" } }, { actor: principalId }),
 			).rejects.toBeInstanceOf(WorkItemsBusyError);
 		} finally {
 			await blocker
@@ -270,7 +302,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			// standing in would now assert nothing.
 			const recoveryAttempt = adapter.patch(
 				{ id, reason: "test change", set: { title: "pool death" } },
-				principalId,
+				{ actor: principalId },
 			);
 			const destroyTimer = setTimeout(() => {
 				void oldPool.end({ timeout: 0 });
@@ -294,7 +326,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		// write plane (COMMAND_QUERY_SEPARATION); a read used to do it here only
 		// because a read used to take the write lock.
 		await expect(
-			adapter.patch({ id, reason: "test change", set: { title: "Doltgres accepted" } }, principalId),
+			adapter.patch({ id, reason: "test change", set: { title: "Doltgres accepted" } }, { actor: principalId }),
 		).resolves.toMatchObject({ id, title: "Doltgres accepted" });
 		const verifier = createWorkItemClient();
 		try {
@@ -313,12 +345,13 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			command: "implement",
 			principalId,
 		});
-		expect(claimed.claimedByRun).toBe("acceptance-run");
+		expect(claimed.runId).toBe("acceptance-run");
 
 		const heartbeat = await adapter.heartbeat({
 			id,
 			runId: "acceptance-run",
 			command: "verify",
+      leaseToken: claimed.leaseToken,
 			principalId,
 		});
 		expect(heartbeat.lastCommand).toBe("verify");
@@ -326,11 +359,12 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		const released = await adapter.release({
 			id,
 			runId: "acceptance-run",
+      leaseToken: claimed.leaseToken,
 			principalId,
 		});
-		expect(released.claimedByRun).toBeUndefined();
-		await expect(adapter.delete(id, principalId)).resolves.toBe(true);
-		await expect(adapter.get(id)).resolves.toBeNull();
+		expect(released.active).toBe(false);
+		await adapter.patch({ id, reason: "Finish fixture", set: { status: "cancelled" } }, { actor: principalId });
+    await expect(adapter.get(id)).resolves.toMatchObject({ status: "cancelled" });
 		await readSql.end({ timeout: 0 });
 	}, 60_000);
 
@@ -349,11 +383,12 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			);
 			await maintenance.unsafe("SELECT dolt_checkout('main')");
 
-			const adapter = new DoltgresWorkItemAdapter(sql, {
+			const adapter = withWorkItemLeases(new DoltgresWorkItemAdapter(sql, {
 			logger: stageLogger,
+        recreateClient: fixtureClient,
 				lockWaitMs: 250,
 				lockRetryMs: 25,
-			});
+    }), new PostgresWorkItemLeaseAdapter(leaseSql));
 			// bug.5358: an unprovable branch must not take reads down. The read is
 			// served from committed `main` — which does not carry task.9599, so null
 			// is the correct answer — while the evidence branch stays untouched.
@@ -389,7 +424,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 						reason: "test change",
 						set: { title: "must not land" },
 					},
-					"component-agent",
+					{ actor: "component-agent" },
 				),
 			).rejects.toThrow(/Work item not found/);
 			// Parked, never deleted: gone from the op namespace, present under
@@ -441,12 +476,13 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 	}, 60_000);
 
 	it("commits only work_items while preserving and deterministically cleaning dirty knowledge", async () => {
-		const adapter = new DoltgresWorkItemAdapter(sql, {
+		const adapter = withWorkItemLeases(new DoltgresWorkItemAdapter(sql, {
 			logger: stageLogger,
+      recreateClient: fixtureClient,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
 			queryTimeoutMs: 5_000,
-		});
+    }), new PostgresWorkItemLeaseAdapter(leaseSql));
 		const id = toWorkItemId("task.9502");
 		const knowledgeId = "component-dirty-knowledge";
 		const knowledgeBranch = "knowledge-component-dirty";
@@ -485,7 +521,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 
 			await adapter.create(
 				{ id, type: "task", title: "Scoped staging acceptance" },
-				principalId,
+				{ actor: principalId },
 			);
 			workItemCreated = true;
 
@@ -511,7 +547,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			).resolves.toHaveLength(1);
 		} finally {
 			if (workItemCreated) {
-				await adapter.delete(id, principalId).catch(() => undefined);
+				await adapter.patch({ id, reason: "Finish fixture", set: { status: "cancelled" } }, { actor: principalId }).catch(() => undefined);
 			}
 			if (knowledgeSession) {
 				await knowledgeSession

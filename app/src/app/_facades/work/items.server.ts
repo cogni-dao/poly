@@ -14,10 +14,12 @@
  * @internal
  */
 
+import type { WorkItemLease } from "@cogni/work-items";
 import type {
 	WorkItemsCreateInput as ContractCreateInput,
 	WorkItemsPatchInput as ContractPatchInput,
 	WorkItemDto,
+	WorkItemsGetOutput,
 	WorkItemsListInput,
 	WorkItemsListOutput,
 	WorkItemSummariesListInput,
@@ -26,11 +28,15 @@ import type {
 import type {
 	WorkBoardColumnPages,
 	WorkItem,
+	WorkItemsBusyReason,
 	WorkQuery,
 	WorkSummaryReadOptions,
+	WriteAttribution,
 } from "@cogni/work-items";
 import {
+	backendUnavailableReason,
 	composeItemEnvelope,
+	createItemRefPorts,
 	judgeMoveSummaries,
 	toWorkItemDto,
 	toWorkItemId,
@@ -70,7 +76,10 @@ export class WorkItemLeaseConflictError extends Error {
 }
 
 export class WorkItemsBackendNotReadyError extends Error {
-	constructor(message: string) {
+	constructor(
+		message: string,
+		readonly reason: WorkItemsBusyReason,
+	) {
 		super(message);
 		this.name = "WorkItemsBackendNotReadyError";
 	}
@@ -146,9 +155,17 @@ async function withSummaryReadings<T extends { moves?: WorkItemDto["moves"] }>(
 	return judgeMoveSummaries(items, readings, options);
 }
 
-/** Single-item read options; `includeLinks` adds the first page of citation links (`?include=links`). */
+/**
+ * Single-item read options; `includeLinks` adds the first page of citation links, `includeArtifacts` and `includeHistory`
+ * the first page of artifact and history refs, `artifactId` one artifact in full (story.0058).
+ */
 export interface WorkItemReadOptions extends WorkSummaryReadOptions {
 	readonly includeLinks?: boolean;
+	readonly includeArtifacts?: boolean;
+	readonly includeHistory?: boolean;
+	readonly artifactId?: string;
+	/** Set false for a caller that needs only the item (the EDO expectations read). Default: read the latest artifacts. */
+	readonly artifacts?: boolean;
 	/** Set false for a caller that needs only the stored move ids (the EDO expectations read). Default: resolve the chain. */
 	readonly chain?: boolean;
 }
@@ -161,8 +178,9 @@ export interface WorkItemReadOptions extends WorkSummaryReadOptions {
 async function withItemEnvelope(
 	dto: WorkItemDto,
 	options?: WorkItemReadOptions,
-): Promise<WorkItemDto> {
+): Promise<WorkItemsGetOutput> {
 	const container = getContainer();
+	const artifactStore = container.workItemArtifacts?.artifacts;
 	const readings = container.goalMetrics
 		? createMoveMetricPorts(
 				() => container.goalMetrics,
@@ -175,6 +193,15 @@ async function withItemEnvelope(
 		{
 			readings,
 			links: createCitationLinksPort(() => container.knowledgeStorePort),
+			// task.0028: the latest artifact of each kind, without body, one bounded read.
+			artifacts: artifactStore
+				? { latest: (id) => artifactStore.latest(id) }
+				: undefined,
+			// story.0058: refs first, then one read; the same ports the agent tool's capability wires.
+			...createItemRefPorts({
+				artifacts: artifactStore,
+				history: container.doltgresWorkItems,
+			}),
 			log: (event) => container.log.warn(event, "work.items.envelope_degraded"),
 		},
 		options,
@@ -191,9 +218,15 @@ function rethrowBackendError(error: unknown): never {
 	if (
 		(error as Error)?.name === "DoltgresNotConfiguredError" ||
 		(error as Error)?.name === "WorkItemsBusyError" ||
+		(error as Error)?.name === "WorkItemsCapacityError" ||
+		(error as Error)?.name === "UnprovableTransitionError" ||
 		(error as Error)?.name === "DoltMergeOutcomeUnknownError"
 	) {
-		throw new WorkItemsBackendNotReadyError((error as Error).message);
+		// The 503 names its reason (task.0162); a busy-named error that carries none is the base "store busy" case.
+		throw new WorkItemsBackendNotReadyError(
+			(error as Error).message,
+			backendUnavailableReason(error) ?? "capacity_held",
+		);
 	}
 	if ((error as Error)?.name === "WorkItemAuthorizationError") {
 		const id = (error as { id?: string }).id ?? "unknown";
@@ -338,7 +371,7 @@ export async function listWorkBoardColumns(
 export async function getWorkItem(
 	id: string,
 	options?: WorkItemReadOptions,
-): Promise<WorkItemDto | null> {
+): Promise<WorkItemsGetOutput | null> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.get(toWorkItemId(id));
@@ -350,14 +383,15 @@ export async function getWorkItem(
 
 export async function createWorkItem(
 	input: ContractCreateInput,
-	sessionUser: { id: string },
+	_sessionUser: { id: string },
+	attribution: WriteAttribution,
 ): Promise<WorkItemDto> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.create(
 			// A null `scores` never reaches the store: it reads as absent.
 			toWorkItemsCreateInput({ ...input, scores: input.scores ?? undefined }),
-			sessionUser.id,
+			attribution,
 		);
 		return await withMoveReadings(toDto(item));
 	} catch (error) {
@@ -367,13 +401,14 @@ export async function createWorkItem(
 
 export async function patchWorkItem(
 	input: ContractPatchInput,
-	sessionUser: { id: string },
+	_sessionUser: { id: string },
+	attribution: WriteAttribution,
 ): Promise<WorkItemDto> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.patch(
 			toWorkItemsPatchInput(input),
-			sessionUser.id,
+			attribution,
 		);
 		return await withMoveReadings(toDto(item));
 	} catch (error) {
@@ -384,27 +419,12 @@ export async function patchWorkItem(
 	}
 }
 
-export async function deleteWorkItem(
-	id: string,
-	sessionUser: { id: string },
-): Promise<boolean> {
-	const container = getContainer();
-	try {
-		return await container.doltgresWorkItems.delete(
-			toWorkItemId(id),
-			sessionUser.id,
-		);
-	} catch (error) {
-		rethrowBackendError(error);
-	}
-}
-
 export async function claimWorkItem(input: {
 	id: string;
 	runId: string;
 	command: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.claim({
@@ -413,7 +433,7 @@ export async function claimWorkItem(input: {
 			command: input.command,
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);
@@ -423,18 +443,20 @@ export async function claimWorkItem(input: {
 }
 
 export async function releaseWorkItem(input: {
+	leaseToken: string;
 	id: string;
 	runId: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.release({
+			leaseToken: input.leaseToken,
 			id: toWorkItemId(input.id),
 			runId: input.runId,
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);
@@ -444,20 +466,22 @@ export async function releaseWorkItem(input: {
 }
 
 export async function heartbeatWorkItem(input: {
+	leaseToken: string;
 	id: string;
 	runId: string;
 	command?: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.heartbeat({
+			leaseToken: input.leaseToken,
 			id: toWorkItemId(input.id),
 			runId: input.runId,
 			...(input.command !== undefined && { command: input.command }),
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if (error instanceof WorkItemNotFoundError) throw error;
 		rethrowBackendError(error);

@@ -155,7 +155,7 @@ export class MimirMetricsAdapter implements MetricsQueryPort {
       );
     }
 
-    const result = await this.fetch<PrometheusInstantResult>(url);
+    const result = await this.fetch<PrometheusInstantResult>(url, params.signal);
     return result;
   }
 
@@ -303,7 +303,7 @@ export class MimirMetricsAdapter implements MetricsQueryPort {
   /**
    * Internal fetch with auth, timeout, and error handling.
    */
-  private async fetch<T>(url: URL): Promise<T> {
+  private async fetch<T>(url: URL, callerSignal?: AbortSignal): Promise<T> {
     const authHeader = `Basic ${Buffer.from(
       `${this.config.username}:${this.config.password}`
     ).toString("base64")}`;
@@ -313,6 +313,10 @@ export class MimirMetricsAdapter implements MetricsQueryPort {
       () => controller.abort(),
       this.config.timeoutMs
     );
+    // Caller cancellation and the adapter timeout both end the request.
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    if (callerSignal?.aborted) onCallerAbort();
+    else callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
 
     try {
       const response = await fetch(url.toString(), {
@@ -356,6 +360,17 @@ export class MimirMetricsAdapter implements MetricsQueryPort {
 
       return json.data as T;
     } catch (error) {
+      if (callerSignal?.aborted) {
+        logger.error(
+          {
+            event: EVENT_NAMES.ADAPTER_MIMIR_ERROR,
+            dep: "mimir",
+            reasonCode: "aborted",
+          },
+          EVENT_NAMES.ADAPTER_MIMIR_ERROR
+        );
+        throw error;
+      }
       if (error instanceof Error && error.name === "AbortError") {
         logger.error(
           {
@@ -384,6 +399,7 @@ export class MimirMetricsAdapter implements MetricsQueryPort {
       throw error;
     } finally {
       clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
     }
   }
 }

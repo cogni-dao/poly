@@ -25,6 +25,7 @@ import {
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { backendUnavailable } from "../../_backend-unavailable";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -89,7 +90,7 @@ export const POST = wrapRouteHandlerWithLogging<{
         return NextResponse.json({ error: error.message }, { status: 409 });
       }
       if (error instanceof WorkItemsBackendNotReadyError) {
-        return NextResponse.json({ error: error.message }, { status: 503 });
+        return backendUnavailable(ctx, error.reason);
       }
       throw error;
     }
@@ -113,6 +114,7 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     const parsed = workItemsReleaseOperation.input.safeParse({
       id,
       runId: url.searchParams.get("runId") ?? undefined,
+      leaseToken: url.searchParams.get("leaseToken") ?? undefined,
     });
     if (!parsed.success) {
       return NextResponse.json(
@@ -139,7 +141,7 @@ export const DELETE = wrapRouteHandlerWithLogging<{
         return NextResponse.json({ error: error.message }, { status: 409 });
       }
       if (error instanceof WorkItemsBackendNotReadyError) {
-        return NextResponse.json({ error: error.message }, { status: 503 });
+        return backendUnavailable(ctx, error.reason);
       }
       throw error;
     }

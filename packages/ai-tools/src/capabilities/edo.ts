@@ -6,7 +6,6 @@ export type {
   ChainDirection,
   ChainNodeEntry,
   DecideParams,
-  EdoCapability,
   EdoSourceType,
   GetChainParams,
   GetChainResult,
@@ -14,3 +13,5 @@ export type {
   RecordOutcomeParams,
   RecordOutcomeResult,
 } from "@cogni/shared-ai-tools";
+/** The capability a tool sees: the host binds each write's attribution (knowledge-store 0.24.0). */
+export type { EdoToolCapability as EdoCapability } from "@cogni-dao/knowledge-store/contracts";

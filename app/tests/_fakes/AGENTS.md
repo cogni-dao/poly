@@ -48,7 +48,7 @@ Deterministic test doubles for unit tests with no I/O dependencies.
   - Graph executor fakes (createImmediateGraphExecutor, createDelayedReturnGraphExecutor)
   - Request builders (createCompletionRequest, createChatRequest)
   - UsageFact builders (buildInprocUsageFact, buildSandboxUsageFact, buildExternalUsageFact)
-  - TEST_GRAPH_NAME constant ("langgraph:poet")
+  - TEST_GRAPH_NAME constant ("langgraph:cogni")
 - **Files considered API:** index.ts, ids.ts, payments/fakes.ts, payments/mock-services.ts, ai/fakes.ts, ai/tool-builders.ts, ai/graph-executor-fakes.ts, ai/request-builders.ts, ai/usage-fact-builders.ts, test-context.ts
 
 ## Responsibilities

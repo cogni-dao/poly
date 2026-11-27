@@ -17,6 +17,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { SourceSystem } from "@cogni/ai-core";
+import type { WriteRunKind } from "@cogni/work-items";
 import type { BillingContext, LlmService } from "@/ports";
 
 /**
@@ -27,8 +28,15 @@ import type { BillingContext, LlmService } from "@/ports";
  */
 export interface ExecutionScope {
   readonly billing: BillingContext;
+  /** The run this scope serves. A tool that needs per-run state (the sandbox folder) reads it here. */
+  readonly runId?: string;
   /** Actor who initiated this run. Used by tools that need user-scoped operations (e.g., schedule CRUD). */
   readonly actorUserId?: string;
+  /** The acting agent principal's user id (agent_principals.user_id). Bound per tool call by the guard. */
+  readonly principalId?: string;
+  /** The run record's kind (`graph_runs.run_kind`), host-set when the record names one. Absent when the record is missing or unreadable: the write then carries no `Run:` line. */
+  readonly runKind?: WriteRunKind;
+  readonly subjectUserId?: string;
   /** Chat-only temporary tech debt — browser disconnect, not durable cancellation. */
   readonly abortSignal?: AbortSignal;
   /** Resolved LlmService for this run (from ModelProviderPort.createLlmService). */
@@ -46,10 +54,15 @@ export function getExecutionScope(): ExecutionScope {
   const scope = executionScopeStorage.getStore();
   if (!scope) {
     throw new Error(
-      "getExecutionScope() called outside runInScope — billing context not available"
+      "getExecutionScope() called outside runInScope — billing context not available",
     );
   }
   return scope;
+}
+
+/** The current execution scope, or undefined outside runInScope. For observers that must never throw (story.0061). */
+export function findExecutionScope(): ExecutionScope | undefined {
+  return executionScopeStorage.getStore();
 }
 
 /**

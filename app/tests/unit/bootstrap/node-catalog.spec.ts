@@ -22,17 +22,13 @@ import {
   WEB_SEARCH_NAME,
   WORK_ITEM_READ_NAME,
 } from "@cogni/ai-tools";
-import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
-import {
-  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
-  POLY_LANGGRAPH_CATALOG,
-} from "@cogni/poly-graphs";
+import { LANGGRAPH_CATALOG, SHARED_NODE_CATALOG } from "@cogni/langgraph-graphs";
+import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
 import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
   POLY_BRAIN_NODE_TOOL_IDS,
-  POLY_WORK_PRIORITIZER_READ_ONLY_NOTE,
   POLY_NODE_LANGGRAPH_CATALOG,
 } from "@/bootstrap/ai/node-catalog";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
@@ -60,13 +56,13 @@ describe("this node's langgraph catalog", () => {
 
   it("preserves every shared graph rather than replacing the base catalog", () => {
     // BASE_IS_SPREAD_NEVER_EDITED. Swapping the provider's catalog must not
-    // silently drop poet/brain/research or the scheduled operator graphs.
+    // silently drop the published cogni coordinator or the program-guarded work-prioritizer.
     for (const graphName of Object.keys(LANGGRAPH_CATALOG)) {
       expect(POLY_NODE_LANGGRAPH_CATALOG[graphName]).toBeDefined();
     }
     expect(POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.graphFactory).toBeTypeOf("function");
     expect(Object.keys(POLY_NODE_LANGGRAPH_CATALOG)).toHaveLength(
-      Object.keys(LANGGRAPH_CATALOG).length + 2
+      Object.keys(LANGGRAPH_CATALOG).length + 1
     );
   });
 
@@ -113,12 +109,12 @@ describe("this node's langgraph catalog", () => {
   });
 
   // task.0086: the shared work-prioritizer writes only through core__work_item_update, guarded only
-  // when the runner passes `program`. This node's runner does not, so triage writes are off.
-  it("offers work-prioritizer core__work_item_read and no work-item write tool", () => {
+  // when the shared runner passes its published `program`, principal and hooks.
+  it("offers published work-prioritizer reads and guarded write tools", () => {
     const toolIds = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
     expect(toolIds).toContain(WORK_ITEM_READ_NAME);
-    expect(toolIds).not.toContain(WORK_ITEM_UPDATE_NAME);
-    expect(toolIds).not.toContain("core__work_item_transition");
+    expect(toolIds).toContain(WORK_ITEM_UPDATE_NAME);
+    expect(toolIds).toContain("core__work_item_artifact_record");
 
     const byId = new Map(
       POLY_CORE_TOOL_BUNDLE.map((bound) => [bound.contract.name, bound.contract])
@@ -132,19 +128,27 @@ describe("this node's langgraph catalog", () => {
       expect(byId.has(toolId), `${toolId} in the node tool bundle`).toBe(true);
       expect(bindings[toolId], `${toolId} bound`).toBeDefined();
     }
-    // Nothing offered may change state.
+    // Every offered state change keeps the shared permission door.
     for (const toolId of toolIds) {
-      expect(byId.get(toolId)?.effect, `${toolId} effect`).not.toBe("state_change");
+      if (byId.get(toolId)?.effect === "state_change")
+        expect(byId.get(toolId)?.requires).toMatchObject({ scope: "work_item:transition" });
     }
   });
 
-  it("tells work-prioritizer it is read-only, after the shared prompt", () => {
-    const prompt = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.systemPrompt ?? "";
-    const shared = (POLY_LANGGRAPH_CATALOG["work-prioritizer"] as { systemPrompt?: string } | undefined)
-      ?.systemPrompt;
-    expect(shared).toBeTruthy();
-    expect(prompt).toContain(POLY_WORK_PRIORITIZER_READ_ONLY_NOTE);
-    expect(prompt).toContain("READ-ONLY ON THIS NODE: triage writes are off");
-    expect(prompt.startsWith(shared as string)).toBe(true);
+  it("keeps the published prioritizer program, principal, factory and prompt", () => {
+    const entry = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"];
+    const shared = SHARED_NODE_CATALOG["work-prioritizer"];
+    expect(entry).toMatchObject({ sharedRuntime: true, principal: shared.principal, program: shared.program });
+    expect(entry?.graphFactory).toBe(shared.graphFactory);
+    expect(entry?.systemPrompt).toBe(shared.systemPrompt);
+    expect(entry?.systemPrompt).not.toContain("READ-ONLY ON THIS NODE");
+  });
+
+  it("publishes exactly the cogni coordinator, the program-guarded work-prioritizer and poly-brain", () => {
+    expect(Object.keys(POLY_NODE_LANGGRAPH_CATALOG).sort()).toEqual([
+      "cogni",
+      "poly-brain",
+      "work-prioritizer",
+    ]);
   });
 });

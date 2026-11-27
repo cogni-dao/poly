@@ -12,17 +12,26 @@
  * @public
  */
 
+import { createDoltgresInboxStates } from "@cogni/knowledge-store/adapters/doltgres";
+import { githubPrFacts } from "@/bootstrap/capabilities/work-item-pr-facts";
+import { resolvePrRepoPin } from "@cogni/work-items";
+import { PostgresWorkItemLeaseAdapter } from "@cogni/work-items/adapters/postgres";
 import { hostname } from "node:os";
 import type { ScheduleRunReader } from "@cogni/scheduling";
 import { PostgresScheduleRunReader } from "@cogni/scheduling/adapters/postgres";
 import type { ToolSourcePort } from "@cogni/ai-core";
+import {
+	CitePairRecorder,
+	KnowledgeReadCounter as PostgresKnowledgeReadCounter,
+	type UsageLogEvent,
+} from "@cogni-dao/metrics/usage";
 import type {
-	EdoCapability,
 	KnowledgeCapability,
 	MetricsCapability,
 	RepoCapability,
 	WebSearchCapability,
 } from "@cogni/ai-tools";
+import { runAttribution } from "@/bootstrap/run-attribution";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
@@ -50,10 +59,12 @@ import { createTigerBeetleAdapter } from "@cogni/financial-ledger/adapters";
 import type { UserId } from "@cogni/ids";
 import { toUserId, userActor } from "@cogni/ids";
 import {
+	bindEdoToolCapability,
 	type ContributionService,
 	createContributionService,
 	createEdoCapability,
 	createKnowledgeCapability,
+	type EdoCapability,
 	defaultCanMergeKnowledge,
 	type KnowledgeStorePort,
 	shapeGate,
@@ -79,7 +90,12 @@ import { numberToPpm } from "@cogni/operator-wallet";
 import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/privy";
 import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
-import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
+import {
+	createWorkItemWriters,
+	type WorkItemArtifactDeps,
+	type WorkItemCommandPort,
+	type WorkItemQueryPort,
+} from "@cogni/work-items";
 import {
 	Client as TemporalClient,
 	Connection as TemporalConnection,
@@ -104,6 +120,7 @@ import {
 	GITHUB_ADAPTER_VERSION,
 	GitHubWebhookNormalizer,
 	getAppDb,
+	findExecutionScope,
 	getExecutionScope,
 	LangfuseAdapter,
 	LiteLlmAdapter,
@@ -118,6 +135,7 @@ import {
 	ViemTreasuryAdapter,
 } from "@/adapters/server";
 import { ServiceDrizzleAccountService } from "@/adapters/server/accounts/drizzle.adapter";
+import { withReadCounting } from "@/adapters/server/knowledge-usage/counting-knowledge-capability";
 import {
 	AggregatingModelCatalog,
 	ProviderResolver,
@@ -130,7 +148,7 @@ import {
 } from "@/adapters/server/ai/providers";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
-import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
+import { createPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 import { createJobLeaderLockSession } from "@/adapters/server/db/job-leader-lock.client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
@@ -141,6 +159,8 @@ import {
 	getTestOperatorWallet,
 } from "@/adapters/test";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import { getCurrentTraceId } from "@/bootstrap/otel";
+import { createSandboxShellCapability } from "@/bootstrap/capabilities/sandbox-workspace";
 import {
 	startGovernanceSyncOnBoot,
 	startMetricsSyncOnBoot,
@@ -157,6 +177,14 @@ import {
 } from "@/bootstrap/capabilities/metrics";
 import { createRepoCapability } from "@/bootstrap/capabilities/repo";
 import { createScheduleCapability } from "@/bootstrap/capabilities/schedule";
+import {
+	type AgentAuthoritySql,
+	type AgentToolAuthority,
+	createAgentToolAuthority,
+} from "@/bootstrap/agent-authority";
+import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
+import { createNodeAdminPort } from "@/bootstrap/node-admin-port";
+import type { NodeAdminPort } from "@/ports";
 import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
 import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
@@ -200,6 +228,7 @@ import type {
 	ConnectionBrokerPort,
 	DataSourceRegistration,
 	GovernanceStatusPort,
+	KnowledgeReadCounter,
 	LangfusePort,
 	LlmService,
 	MetricsQueryPort,
@@ -235,7 +264,7 @@ import {
 	getStewardWalletConfig,
 } from "@/shared/config";
 import { serverEnv } from "@/shared/env/server-env";
-import { makeLogger } from "@/shared/observability";
+import { logEvent, makeLogger } from "@/shared/observability";
 import { EVENT_NAMES } from "@/shared/observability/events";
 import { USDC_TOKEN_ADDRESS } from "@/shared/web3";
 import type { EvmOnchainClient } from "@/shared/web3/onchain/evm-onchain-client.interface";
@@ -307,8 +336,12 @@ export interface Container {
 	workItemQuery: WorkItemQueryPort;
 	/** Work item commands — deployed source of truth is the node's Doltgres hub. */
 	workItemCommand: WorkItemCommandPort;
+	/** Write-time daily counters of agent atom reads (story.0061): batched, never blocks or fails the caller. */
+	knowledgeReadCounter: KnowledgeReadCounter;
 	/** Extended CRUD surface used by the authenticated work-item HTTP API. */
 	doltgresWorkItems: WorkItemsDoltgresPort;
+	/** Review and validation artifacts of work items (task.0028): the item store and the insert-only artifact store. Undefined when DOLTGRES_URL is unset. */
+	workItemArtifacts: WorkItemArtifactDeps | undefined;
 	/** Run event streaming — publish/subscribe via Redis Streams */
 	runStream: RunStreamPort;
 	/** Node-level event streaming — undefined when REDIS_URL not set */
@@ -341,6 +374,11 @@ export interface Container {
 	providerResolver: ModelProviderResolverPort;
 	/** Service-role DB for explicitly cross-tenant/system Poly read models. */
 	serviceDb: Database;
+	/** The shared schedule capability (the published schedule tools bind to it with the run's model). */
+	sharedScheduleCapability: import("@cogni/ai-tools").ScheduleCapability;
+	/** AI-access composition only: the permission catalog derived from the tool contracts, role rows and the guard store. */
+	agentAuthority: AgentToolAuthority;
+	nodeAdminPort: NodeAdminPort;
 	/** Poly copy-trade/order ledger. Cross-tenant root surface; tenant calls use forTenant(ctx). */
 	orderLedger: OrderLedger;
 	getBoundedPaperExecutor: ReturnType<typeof createPolyTradeExecutorFactory>["getBoundedPaperExecutor"];
@@ -2409,6 +2447,20 @@ function createContainer(): Container {
 
 	const scheduleRunReader = new PostgresScheduleRunReader(db.$client);
 
+	// story.0061: the shared usage writers log through this node's registered events.
+	const usageLog = log.child({ component: "KnowledgeUsage" });
+	const logUsage = ({ event, ...fields }: UsageLogEvent) =>
+		logEvent(usageLog, event, fields);
+	const knowledgeReadCounter = new PostgresKnowledgeReadCounter(
+		serviceDb.$client,
+		logUsage,
+	);
+	const flushReadCounts = () => {
+		void knowledgeReadCounter.flush();
+	};
+	process.on("SIGTERM", flushReadCounts);
+	process.on("SIGINT", flushReadCounts);
+
 	// Worker scheduling (serviceDb, BYPASSRLS)
 	const executionGrantWorkerPort = new DrizzleExecutionGrantWorkerAdapter(
 		serviceDb,
@@ -2438,6 +2490,7 @@ function createContainer(): Container {
 	// closed instead of silently writing ephemeral markdown inside the pod.
 	let workItemAdapter: RuntimeWorkItemAdapter =
 		createUnavailableWorkItemAdapter();
+	let workItemArtifacts: WorkItemArtifactDeps | undefined;
 	const workItemCommand = createUnavailableWorkItemCommand();
 
 	// ScheduleCapability for AI tools (reads actorUserId from ALS at invocation time)
@@ -2481,19 +2534,54 @@ function createContainer(): Container {
 				max: 1,
 			});
 		const workItemClient = buildWorkItemClient();
-		workItemAdapter = new DoltgresPolyWorkItemAdapter(
+    const prRepos = resolvePrRepoPin(env.WORK_ITEMS_PR_REPO);
+    if (prRepos.reason || prRepos.ignored.length) log.warn({
+      event: EVENT_NAMES.WORK_ITEMS_PR_REPO_UNPINNED, reason: prRepos.reason,
+      ignored: prRepos.ignored.length,
+    }, "Work-item PR repository pin is absent or incomplete");
+		workItemAdapter = createPolyWorkItemAdapter(
 			workItemClient,
+			new PostgresWorkItemLeaseAdapter(serviceDb.$client, { logger: log }),
 			log.child({ component: "doltgres-work-items" }),
 			{
 				recreateClient: buildWorkItemClient,
-				legacyClient: buildWorkItemClient(),
 				// task.0086: pins a patch's cites to commits with lock-free reads on the
 				// knowledge pool, never on the writer connection that holds the lock.
 				entryResolver: createDoltgresEntryResolver(doltClient),
 				// story.0033: a `moves` entry pins the metric's latest good observation as its baseline.
 				metricBaseline: moveMetrics.baselines,
+        prFacts: githubPrFacts,
+        inboxes: createDoltgresInboxStates(doltClient),
+        ...(prRepos.repos.length ? { prRepos: prRepos.repos } : {}),
+        ...(env.APP_BASE_URL ? { hubOrigin: new URL(env.APP_BASE_URL).origin } : {}),
 			},
 		);
+		// story.0061: a successful patch also records the (atom, item) pairs it cites; the route and the agent tool share
+		// this patch, and the record never fails or delays it.
+		{
+			const citePairs = new CitePairRecorder(serviceDb.$client, logUsage);
+			const leased = workItemAdapter;
+			workItemAdapter = Object.assign(Object.create(leased), {
+				async patch(
+					...args: Parameters<RuntimeWorkItemAdapter["patch"]>
+				) {
+					const item = await leased.patch(...args);
+					if (args[0].cites?.length) {
+						citePairs.record(item.id, item.revision, args[0].cites);
+					}
+					return item;
+				},
+			}) as RuntimeWorkItemAdapter;
+		}
+		// task.0028: artifacts go through the work-items writer path; the adapter owns the store. A story validation
+		// names its origin; only this hub's own is accepted.
+		workItemArtifacts = workItemAdapter.artifacts
+			? {
+					items: workItemAdapter,
+					artifacts: workItemAdapter.artifacts,
+					ownOrigin: env.APP_BASE_URL,
+				}
+			: undefined;
 		const createKnowledgeBranchClient = () => buildDoltgresClient({
 			connectionString: doltgresUrl,
 			applicationName: `cogni_knowledge_branch_${env.SERVICE_NAME ?? "app"}`,
@@ -2510,6 +2598,7 @@ function createContainer(): Container {
 			knowledgeSql: doltClient,
 			observationsSql: serviceDb.$client,
 			environment: env.DEPLOY_ENVIRONMENT ?? "unknown",
+			metricsQuery,
 			// Compute receipts and skipped invalid definitions must reach Loki.
 			log: (event) => log.info(event, "metric.event"),
 		});
@@ -2537,6 +2626,15 @@ function createContainer(): Container {
 					}),
 				);
 			};
+		// After the listActiveGoals reassignment, so the spread keeps it (story.0061).
+		knowledgeCapability = withReadCounting(
+			knowledgeCapability,
+			knowledgeReadCounter,
+			() => {
+				const scope = findExecutionScope();
+				return scope ? { principalId: scope.principalId } : undefined;
+			},
+		);
 		const edoResolver = new DoltgresEdoResolverAdapter({
 			sql: doltClient,
 			store: knowledgePort,
@@ -2606,6 +2704,14 @@ function createContainer(): Container {
 		log.warn("Knowledge store not configured (DOLTGRES_URL not set)");
 	}
 
+	// ACTING_PRINCIPAL_FOR_WRITES (task.0133): every tool write of the work-item capability is attributed here, and only here: see `createWorkItemWriters` in `@cogni/work-items`.
+	const workItemWriters = createWorkItemWriters({
+		log,
+		scope: getExecutionScope,
+		traceId: getCurrentTraceId,
+		store: () => workItemAdapter,
+		artifacts: () => workItemArtifacts,
+	});
 	const workItemCapability = createWorkItemCapability({
 		workItemQuery: workItemAdapter,
 		workItemCommand,
@@ -2613,27 +2719,24 @@ function createContainer(): Container {
 		// task.0118: first page of an item's citation links, the same read the UI and the route use.
 		links: createCitationLinksPort(() => knowledgeStorePort),
 		log: (event) => log.warn(event, "work.items.envelope_degraded"),
-		backlogWriter: {
-			store: workItemAdapter,
-			principalId: () => {
-				const actor = getExecutionScope().actorUserId;
-				if (!actor) throw new Error("Authenticated work-item actor required");
-				return actor;
-			},
-		},
+		backlogWriter: workItemWriters.backlogWriter,
+		history: workItemAdapter,
+		artifacts: workItemWriters.artifacts,
 	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
 	const toolBindings = createToolBindings({
 		nodePublicOrigin: env.APP_BASE_URL,
 		knowledgeCapability,
-		edoCapability,
+		// ACTING_PRINCIPAL_FOR_WRITES (task.0133): a tool never builds an attribution; the host binds the run's at each call.
+		edoCapability: bindEdoToolCapability(edoCapability, runAttribution),
 		metricsCapability,
 		webSearchCapability,
 		repoCapability,
 		scheduleCapability,
 		vcsCapability: stubVcsCapability,
 		workItemCapability,
+		sandboxShellCapability: createSandboxShellCapability(env),
 	});
 	const goalProgress = createGoalProgressReader({
 		metrics: () => goalMetrics,
@@ -2649,6 +2752,16 @@ function createContainer(): Container {
 		...toolBindings,
 		...metricTools.bindings,
 	});
+
+	// One authority: its permission catalog derives from the tool contracts (DECLARED_ONCE_SHOWN_EVERYWHERE).
+	const agentAuthority = createAgentToolAuthority({
+		// Service role: agent_roles / agent_principals are deny-all for the app role.
+		sql: serviceDb.$client as unknown as AgentAuthoritySql,
+		nodeAdmin: createApproversNodeAdminAuthority(),
+		log,
+		toolBundle: [...POLY_CORE_TOOL_BUNDLE],
+	});
+	const nodeAdminPort = createNodeAdminPort(agentAuthority);
 
 	// Config: rethrow in dev/test for diagnosis, respond_500 in production for safety
 	const config: ContainerConfig = {
@@ -2808,7 +2921,9 @@ function createContainer(): Container {
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
 		workItemCommand,
+		knowledgeReadCounter,
 		doltgresWorkItems: workItemAdapter,
+		workItemArtifacts,
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {
@@ -2829,6 +2944,9 @@ function createContainer(): Container {
 			: undefined,
 		connectionBroker,
 		serviceDb,
+		sharedScheduleCapability: scheduleCapability,
+		agentAuthority,
+		nodeAdminPort,
 		orderLedger,
 		getBoundedPaperExecutor: polyTradeExecutorFactory.getBoundedPaperExecutor,
 		copyTradeTargetSource,

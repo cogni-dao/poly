@@ -50,7 +50,7 @@ describe("schedules.create.v1 contract", () => {
     it("accepts enabled schedule with nextRunAt", () => {
       const valid = {
         id: "123e4567-e89b-12d3-a456-426614174000",
-        graphId: "langgraph:poet",
+        graphId: "langgraph:cogni",
         input: { messages: [] },
         cron: "0 9 * * *",
         timezone: "UTC",
@@ -66,7 +66,7 @@ describe("schedules.create.v1 contract", () => {
     it("accepts disabled schedule with null nextRunAt", () => {
       const valid = {
         id: "123e4567-e89b-12d3-a456-426614174000",
-        graphId: "langgraph:poet",
+        graphId: "langgraph:cogni",
         input: {},
         cron: "0 9 * * *",
         timezone: "UTC",
@@ -82,7 +82,7 @@ describe("schedules.create.v1 contract", () => {
     it("rejects invalid UUID", () => {
       const invalid = {
         id: "not-a-uuid",
-        graphId: "langgraph:poet",
+        graphId: "langgraph:cogni",
         input: {},
         cron: "0 9 * * *",
         timezone: "UTC",
@@ -108,7 +108,7 @@ describe("schedules.list.v1 contract", () => {
       schedules: [
         {
           id: "123e4567-e89b-12d3-a456-426614174000",
-          graphId: "langgraph:poet",
+          graphId: "langgraph:cogni",
           input: {},
           cron: "0 9 * * *",
           timezone: "UTC",

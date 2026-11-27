@@ -22,7 +22,6 @@ import type {
   WorkItemCapability,
   WorkItemInfo,
   WorkItemQueryParams,
-  WorkItemTransitionResult,
 } from "@cogni/shared-ai-tools";
 import { WorkItemPatchConflictError } from "@cogni/shared-ai-tools";
 import type {
@@ -32,6 +31,8 @@ import type {
   WorkItemQueryPort,
   WorkItemStatus,
   WorkItemType,
+  WriteAttribution,
+  createWorkItemWriters,
 } from "@cogni/work-items";
 import type {
   EnvelopeDegradedEvent,
@@ -40,6 +41,9 @@ import type {
 } from "@cogni/work-items";
 import {
   composeItemEnvelope,
+  createItemRefPorts,
+  recordWorkItemArtifact,
+  artifactsNotConfigured,
   judgeMoveSummaries,
   toWorkItemDto,
   toWorkItemId,
@@ -60,9 +64,17 @@ export interface WorkItemCapabilityDeps {
   readonly links?: ItemLinksPort | undefined;
   /** One event per degraded envelope part (chain or links). */
   readonly log?: ((event: EnvelopeDegradedEvent) => void) | undefined;
+  readonly history?: WorkItemsDoltgresPort;
+  readonly artifacts?: ReturnType<typeof createWorkItemWriters>["artifacts"];
   readonly backlogWriter?: {
     readonly store: Pick<WorkItemsDoltgresPort, "patch">;
-    readonly principalId: () => string;
+    /** Host-built at invocation: the run's acting principal, its requester and the run (task.0133). */
+    readonly attribution: () => WriteAttribution;
+    /** One terminal refusal when the attribution could not be built (a run with no acting principal): nothing was written. */
+    readonly attributionDenied?: (event: {
+      workItemId: string;
+      error: unknown;
+    }) => void;
   };
 }
 
@@ -140,18 +152,22 @@ export function createWorkItemCapability(
      * item with each move's readings, verdict and metric → KPI → goal chain, and with `includeLinks`
      * the first page of citation links.
      */
-    async read(id, options): Promise<WorkItemInfo | null> {
+    async read(id, options) {
       const result = await list({ ids: [id], limit: 1 });
       const item = result.items
         .map(toWorkItemInfo)
         .find((entry) => entry.id === id);
       if (!item) return null;
       // ONE_COMPOSITION: the same `composeItemEnvelope` the HTTP facade calls.
-      return composeItemEnvelope(
-        item,
-        { readings: deps.moveReadings, links: deps.links, log: deps.log },
-        { includeLinks: options?.includeLinks === true },
-      );
+      const stores = deps.artifacts?.deps();
+      return composeItemEnvelope(item, {
+        readings: deps.moveReadings,
+        links: deps.links,
+        artifacts: stores ? { latest: (itemId) => stores.artifacts.latest(itemId) } : undefined,
+        ...createItemRefPorts({ artifacts: stores?.artifacts, history: deps.history }),
+        log: deps.log,
+      }, options);
+
     },
 
     async query(params): Promise<readonly WorkItemInfo[]> {
@@ -169,30 +185,37 @@ export function createWorkItemCapability(
       };
     },
 
-    async transitionStatus(input): Promise<WorkItemTransitionResult> {
-      const current = await workItemQuery.get(toWorkItemId(input.id));
-      if (!current) {
-        throw new Error(`Work item not found: ${input.id}`);
-      }
-
-      const updated = await workItemCommand.transitionStatus({
-        id: toWorkItemId(input.id),
-        expectedRevision: String(current.revision),
-        toStatus: input.toStatus as WorkItemStatus,
-        ...(input.reason && { reason: input.reason }),
-      });
-
-      return {
-        id: updated.id,
-        previousStatus: current.status,
-        newStatus: updated.status,
-        revision: updated.revision as number,
-      };
-    },
+    ...(deps.artifacts && {
+      async recordArtifact(input: { id: string; body: unknown }) {
+        const artifacts = deps.artifacts;
+        if (!artifacts) throw new Error("Artifact writer unavailable");
+        let attribution: WriteAttribution;
+        try { attribution = artifacts.attribution(); }
+        catch (error) {
+          artifacts.log({ event: "work.items.artifact_refused", status: 403,
+            outcome: "refused", workItemId: input.id, errorCode: "attribution_denied" });
+          throw error;
+        }
+        const stores = artifacts.deps();
+        const result = stores
+          ? await recordWorkItemArtifact(stores, input.id, attribution, input.body)
+          : artifactsNotConfigured(input.id, "write");
+        artifacts.log(result.log, attribution);
+        return { status: result.status, body: result.body };
+      },
+    }),
 
     async patch(input): Promise<WorkItemInfo> {
       const writer = deps.backlogWriter;
       if (writer) {
+        let attribution: WriteAttribution;
+        try {
+          attribution = writer.attribution();
+        } catch (error) {
+          // Fail closed, and say so in the same terminal event a refused patch always uses.
+          writer.attributionDenied?.({ workItemId: input.id, error });
+          throw error;
+        }
         try {
           const updated = await writer.store.patch(
             {
@@ -206,7 +229,7 @@ export function createWorkItemCapability(
               reason: input.reason,
               ...(input.cites !== undefined && { cites: input.cites }),
             },
-            writer.principalId(),
+            attribution,
           );
           return toWorkItemInfo(updated);
         } catch (error) {

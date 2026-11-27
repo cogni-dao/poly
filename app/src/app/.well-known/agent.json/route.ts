@@ -244,12 +244,12 @@ export async function GET(request: Request) {
 				outputSchema: z.toJSONSchema(workItemsPatchOperation.output),
 			},
 			deleteWorkItem: {
-				method: "DELETE",
-				endpoint: `${origin}/api/v1/work/items/{id}`,
-				auth: { type: "bearer" },
-				inputSchema: z.toJSONSchema(workItemsDeleteOperation.input),
-				outputSchema: z.toJSONSchema(workItemsDeleteOperation.output),
-			},
+        method: "DELETE", endpoint: `${origin}/api/v1/work/items/{id}`,
+        auth: { type: "bearer" }, deprecated: true,
+        description: "Retired: HTTP 410. Use updateWorkItem with reason, expectedRevision and set.status=cancelled.",
+        inputSchema: z.toJSONSchema(workItemsDeleteOperation.input),
+        outputSchema: z.toJSONSchema(workItemsDeleteOperation.output),
+      },
 			claimWorkItem: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/work/items/{id}/claims`,
@@ -266,7 +266,7 @@ export async function GET(request: Request) {
 			},
 			releaseWorkItem: {
 				method: "DELETE",
-				endpoint: `${origin}/api/v1/work/items/{id}/claims?runId={runId}`,
+				endpoint: `${origin}/api/v1/work/items/{id}/claims?runId={runId}&leaseToken={leaseToken}`,
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(workItemsReleaseOperation.input),
 				outputSchema: z.toJSONSchema(workItemsReleaseOperation.output),
@@ -299,13 +299,13 @@ export async function GET(request: Request) {
 		},
 		defaults: {
 			model: "gpt-4o-mini",
-			graph_name: "poet",
+			graph_name: "cogni",
 		},
 		usage: {
 			note: "completions requires graph_name for newly registered agents",
 			example: {
 				model: "gpt-4o-mini",
-				graph_name: "poet",
+				graph_name: "cogni",
 				messages: [{ role: "user", content: "Hello" }],
 			},
 		},

@@ -20,6 +20,19 @@ import {
 export const EVENT_NAMES = {
 	...SHARED_EVENT_NAMES,
 	DB_POOL_CONFIGURED: "adapter.db_pool.configured",
+	// Node AI sandbox (story.0090): the push-token env provider warning and the cleanup tick.
+	ADAPTER_SANDBOX_PUSH_TOKEN: "adapter.sandbox.push_token",
+	ADAPTER_SANDBOX_TICK: "adapter.sandbox.tick",
+	// Admin AI access (story.0090): one terminal event per permission operation, and the admin session's audit.
+	ADMIN_ACTION: "admin.action",
+	AI_PERMISSION_COMPLETE: "ai_permission.complete",
+	// Agent authority host (`@cogni/agent-grants/host`, AGENT_HOST_EVENTS): the names repeat the package's values (parity test).
+	AGENT_TOOL_AUTHZ: "agent_tool.authz",
+	AGENT_ROLE_GRANTED: "agent_role.granted",
+	AGENT_ROLE_REVOKED: "agent_role.revoked",
+	AGENT_ROLE_REQUESTED: "agent_role.requested",
+	AGENT_ROLE_DENIED: "agent_role.denied",
+	AGENT_ROLES_UNAVAILABLE: "agent.roles.unavailable",
 	// Wallet-analysis slice failed and was swallowed into a response warning (bug.5064).
 	POLY_WALLET_ANALYSIS_SLICE_FAILED: "poly.wallet_analysis.slice_failed",
 	// Research read refused because Postgres had no connection to give (bug.5064): 503, not 500.
@@ -42,6 +55,17 @@ export const EVENT_NAMES = {
 	WORK_ITEMS_CREATE_REFUSED: "work.items.create_refused",
 	WORK_ITEMS_PATCH_SUCCESS: "work.items.patch_success",
 	WORK_ITEMS_PATCH_REFUSED: "work.items.patch_refused",
+	WORK_ITEMS_DELETE_RETIRED: "work.items.delete_retired",
+	WORK_ITEMS_PR_REPO_UNPINNED: "adapter.work_items.pr_repo_unpinned",
+	// The single-item read (story.0085): one terminal event per GET from the package route core; ids, parts and codes only. The names repeat WORK_ITEM_READ_EVENTS.
+	WORK_ITEMS_GET_SUCCESS: "work.items.get_success",
+	WORK_ITEMS_GET_REFUSED: "work.items.get_refused",
+	// Artifacts (task.0028): one terminal event per artifacts call, codes and counts only.
+	WORK_ITEMS_ARTIFACT_RECORDED: "work.items.artifact_recorded",
+	WORK_ITEMS_ARTIFACT_REFUSED: "work.items.artifact_refused",
+	WORK_ITEMS_ARTIFACTS_READ: "work.items.artifacts_read",
+	// A work-item store answered busy with no terminal event of its own (task.0162): one 503 line with its closed `reason`, never the error text.
+	WORK_ITEMS_BACKEND_UNAVAILABLE: "work.items.backend_unavailable",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,

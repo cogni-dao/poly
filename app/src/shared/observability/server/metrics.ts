@@ -259,10 +259,11 @@ export const byoAuthDurationMs = getOrCreateHistogram(
 
 /**
  * Map HTTP status code to bucket for low-cardinality label.
- * Returns '2xx', '4xx', or '5xx'.
+ * Returns '2xx', '3xx', '4xx', or '5xx'; anything else counts as '5xx'.
  */
-export function statusBucket(status: number): "2xx" | "4xx" | "5xx" {
+export function statusBucket(status: number): "2xx" | "3xx" | "4xx" | "5xx" {
   if (status >= 200 && status < 300) return "2xx";
+  if (status >= 300 && status < 400) return "3xx";
   if (status >= 400 && status < 500) return "4xx";
   return "5xx";
 }

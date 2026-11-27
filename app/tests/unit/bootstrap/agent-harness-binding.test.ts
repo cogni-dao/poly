@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+// SPDX-FileCopyrightText: 2026 Cogni-DAO
+
+/**
+ * Module: `@tests/unit/bootstrap/agent-harness-binding`
+ * Purpose: Prove the binding invariants of the shared Cogni harness over Poly's REAL catalog and tool bundles (no fake entries).
+ * Scope: Which graph can hold the shell, what the program-guarded prioritizer may hold, which contracts must declare a lock, and what the
+ *   coordinator prompt tells the model this node runs.
+ * Invariants:
+ *   - SHELL_ONLY_IN_COGNI: `core__sandbox_shell` is listed only by `cogni`.
+ *   - PRIORITIZER_USES_PROGRAM: the released program restricts writes; every write has the standard permission requirement.
+ *   - EVERY_WRITE_DECLARES_REQUIRES: a contract whose effect is not `read_only` declares `requires` (the guard denies it otherwise).
+ *   - PROMPT_MATCHES_NODE: the coordinator prompt names no workflow or write tool this node does not run.
+ * Side-effects: none
+ * Links: src/bootstrap/ai/node-catalog.ts, packages/langgraph-graphs/src/catalog.ts, story.0090
+ * @internal
+ */
+
+import { SANDBOX_SHELL_NAME } from "@cogni/ai-tools";
+import { describe, expect, it } from "vitest";
+
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
+import { POLY_NODE_LANGGRAPH_CATALOG } from "@/bootstrap/ai/node-catalog";
+import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
+
+const bundle = [...POLY_CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE];
+const byId = new Map(bundle.map((tool) => [tool.contract.name, tool.contract]));
+
+describe("shared Cogni harness binding (real catalog and bundles)", () => {
+  it("lists the shell in the cogni coordinator only", () => {
+    const holders = Object.entries(POLY_NODE_LANGGRAPH_CATALOG)
+      .filter(([, entry]) => entry.toolIds.includes(SANDBOX_SHELL_NAME))
+      .map(([name]) => name);
+    expect(holders).toEqual(["cogni"]);
+  });
+
+  it("gives the work-prioritizer published guarded writes, each resolvable in the node bundle", () => {
+    const toolIds =
+      POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
+    expect(toolIds.length).toBeGreaterThan(0);
+    for (const id of toolIds) {
+      const contract = byId.get(id);
+      // Metric and goal-progress tools are bound by the container's metric tools, not the static bundle.
+      if (!contract) {
+        expect(
+          id.startsWith("core__metric") || id === "core__goal_progress",
+          `${id} must resolve in the node bundle`
+        ).toBe(true);
+        continue;
+      }
+      if (contract.effect !== "read_only") expect(contract.requires).toMatchObject({ scope: "work_item:transition" });
+    }
+  });
+
+  it("gives poly-brain only read_only tools", () => {
+    for (const id of POLY_NODE_LANGGRAPH_CATALOG["poly-brain"]?.toolIds ?? []) {
+      expect(byId.get(id)?.effect, `${id} effect`).toBe("read_only");
+    }
+  });
+
+  it("declares requires on every non-read_only contract in the node bundles", () => {
+    const missing = bundle
+      .filter((tool) => tool.contract.effect !== "read_only")
+      .filter((tool) => !tool.contract.requires)
+      .map((tool) => tool.contract.name);
+    expect(missing).toEqual([]);
+    // The shell's own lock is the one the admin turns On.
+    expect(byId.get(SANDBOX_SHELL_NAME)?.requires).toMatchObject({
+      scope: "sandbox:exec",
+      kind: "node",
+    });
+  });
+
+  it("tells the cogni coordinator only about workflows this node runs", () => {
+    const prompt = POLY_NODE_LANGGRAPH_CATALOG.cogni?.systemPrompt ?? "";
+    expect(prompt).toContain("Host-owned registered workflows:");
+    expect(prompt).not.toContain("work-closeout");
+    expect(prompt).toContain("core__work_item_update");
+    expect(prompt).toContain("core__work_item_artifact_record");
+    expect(prompt).toContain("langgraph:work-prioritizer");
+  });
+});
