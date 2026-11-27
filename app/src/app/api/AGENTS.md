@@ -75,15 +75,8 @@ routes direct adapter, persistence or feature-policy ownership.
   - `/api/v1/knowledge/domains/[domain]` [GET, PATCH, DELETE] - authenticated domain read/update/delete; baseline and nonempty deletion refused
   - `/api/v1/knowledge/index` [GET] - content-free knowledge routing projection with optional useWhen filter
   - `/api/v1/agent/register` [POST] - unauthenticated machine actor registration (returns Bearer API key)
-  - `/api/v1/agent/access-requests` [GET, POST] - bearer-only self lifecycle list/request for owner-approved performance access
-  - `/api/v1/agent/access-requests/[id]` [GET] - bearer-only self poll of request lifecycle
-  - `/api/v1/agent/runs` [GET] - machine-authenticated run list
-  - `/api/v1/agent/runs/[runId]/stream` [GET] - machine-authenticated run stream SSE
-  - `/api/v1/poly/agent-grants` [GET, POST] - owner-managed principal capability grants
-  - `/api/v1/poly/agent-grants/[id]` [DELETE] - owner-only soft revocation
-  - `/api/v1/poly/agent-access-requests` [GET] - browser-owner access lifecycle list
-  - `/api/v1/poly/agent-access-requests/preview` [POST] - browser-owner approval-token preview
-  - `/api/v1/poly/agent-access-requests/[id]/decision` [POST] - browser-owner approve/deny
+  - `/api/v1/agent/access-requests` [GET, POST] - bearer-only: an agent asks for a permission for itself (the shared `@cogni/agent-grants/http` core) and lists its own asks and grants
+  - `/api/v1/agent-access/mine` [GET, POST, DELETE] and `/api/v1/agent-access/mine/preview` [POST] - session-only: the account owner turns an AI's `account:read` On or Off on `/profile`
   - `/api/v1/poly/account/target-positions` [GET] - delegated, account-scoped saved target positions
   - `/api/v1/poly/research/target-positions` [GET] - owner-session saved target positions
   - `/api/v1/ai/runs/[runId]/ui-stream` [GET] - session-authenticated AI SDK chat replay stream

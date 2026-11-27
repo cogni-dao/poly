@@ -10,7 +10,8 @@
  *   join the package after task.0181's release.
  * Invariants:
  *   - ADMIN_FROM_USER_BINDINGS, DECLARED_SCOPES_FROM_CONTRACTS, NO_SECRETS_IN_LOGS: owned by the package host; see `@cogni/agent-grants/host`.
- *   - POLY_LEGACY_GRANTS_UNTOUCHED: Poly's own account-grant plane (`features/agent-grants`) is not read here; it retires in a later PR.
+ *   - ONE_GRANT_PLANE: Poly's own account-grant plane is gone (migration 0093). Its `account:read` grant is an `agent_roles` row, declared once through
+ *     `app/src/node-extensions.ts` (the node composition root) and passed here as `routes`.
  * Side-effects: IO (service-role database reads and writes)
  * Links: https://cognidao.org/knowledge/node-capability-grants-standard
  * @internal
@@ -27,6 +28,7 @@ import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
 import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared";
 import type { Logger } from "pino";
 
+import { nodeExtensions } from "@/node-extensions";
 import { failureFields } from "@/shared/observability";
 
 export type { AgentAuthoritySql, AgentToolAuthority };
@@ -36,6 +38,8 @@ export function createAgentToolAuthority(deps: {
   nodeAdmin: NodeAdminAuthority;
   log: Logger;
   toolBundle: readonly CatalogBoundTool[];
+  /** Create the person's billing account when they turn an account row On and have none yet. */
+  ensureBillingAccount: (userId: string) => Promise<string>;
 }): AgentToolAuthority {
   return createHostAuthority({
     sql: deps.sql,
@@ -45,8 +49,10 @@ export function createAgentToolAuthority(deps: {
       id: tool.contract.name,
       requires: tool.contract.requires,
     })),
+    ...(nodeExtensions.routes ? { routes: nodeExtensions.routes } : {}),
     graphs: Object.values(LANGGRAPH_CATALOG),
     systemUserIds: [COGNI_SYSTEM_PRINCIPAL_USER_ID],
+    ensureBillingAccount: deps.ensureBillingAccount,
     failureFields,
   });
 }

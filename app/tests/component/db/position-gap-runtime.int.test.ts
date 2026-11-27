@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 import { randomUUID } from "node:crypto";
-import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import {
 	polyAlgorithmInputSnapshots,
 	polyCopyTradeFills,
@@ -14,6 +13,10 @@ import {
 	polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
 import { toUserId, userActor } from "@cogni/ids";
+import {
+	deleteAccountGrants,
+	seedAccountGrant,
+} from "@tests/_fixtures/db/account-grants";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -80,12 +83,11 @@ describe("position-gap runtime persistence", () => {
 			{ id: accountA, ownerUserId: ownerA, balanceCredits: 0n },
 			{ id: accountB, ownerUserId: ownerB, balanceCredits: 0n },
 		]);
-		await db.insert(agentCapabilityGrants).values({
-			billingAccountId: accountA,
-			granteePrincipalId: delegate,
-			scopes: ["account:read"],
+		await seedAccountGrant(db, {
+			principalId: delegate,
+			accountId: accountA,
+			approvedBy: ownerA,
 			expiresAt: future,
-			createdByUserId: ownerA,
 		});
 
 		const runB = randomUUID();
@@ -328,9 +330,7 @@ describe("position-gap runtime persistence", () => {
 			.where(
 				inArray(polyPositionGapRuns.billingAccountId, [accountA, accountB]),
 			);
-		await db
-			.delete(agentCapabilityGrants)
-			.where(eq(agentCapabilityGrants.billingAccountId, accountA));
+		await deleteAccountGrants(db, [accountA]);
 		await db
 			.delete(billingAccounts)
 			.where(inArray(billingAccounts.id, [accountA, accountB]));

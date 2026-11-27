@@ -16,8 +16,8 @@
  *   - NO_HANDLER_IN_PACKAGES: runtime binding is app-local
  *     (`@features/capability-plane`); packages stay pure so they can be
  *     imported by any transport without dragging in a DB client.
- *   - SCOPE_ENUM_SINGLE_SOURCE: `requiredScope` is typed by
- *     `AgentCapabilityScope` from `poly.agent-grants.v1.contract`.
+ *   - SCOPE_IS_THE_SHARED_GRANT: `requiredScope` is the shared `account:read` grant (story.0090); the legacy
+ *     `poly.agent-grants.v1.contract` scope enum is gone.
  *   - COMPOSE_NEVER_MUTATE: existing `*Operation` literals are frozen port
  *     entries; account-read descriptors spread them rather than editing them.
  *   - GENERATED_DISCOVERY: `.well-known/agent.json` is a typed projection of
@@ -43,13 +43,18 @@ import {
   PolyAccountTargetPositionsOwnerQuerySchema,
   polyAccountTargetPositionsOperation,
 } from "./poly.account.target-positions.v1.contract";
-import type { AgentCapabilityScope } from "./poly.agent-grants.v1.contract";
 import { polyCopyTradeOrdersOperation } from "./poly.copy-trade.orders.v1.contract";
 import {
   polyResearchCopyTradeInvestigationEvidenceOperation,
   polyResearchCopyTradeInvestigationOperation,
 } from "./poly.research-copy-trade-investigation.v1.contract";
 import { polyResearchCopyTradePnlOperation } from "./poly.research-copy-trade-pnl.v1.contract";
+
+/**
+ * The one delegable scope every account read is gated by: the shared `account:read` grant of `@cogni/agent-grants`
+ * (`resource = 'account'`, approved by the account owner on `/profile`). The scope vocabulary is declared there, not here.
+ */
+export const ACCOUNT_READ_SCOPE = "account:read" as const;
 
 /** HTTP verbs an account read may be published under. Reads only. */
 export type AccountReadMethod = "GET";
@@ -81,7 +86,7 @@ export type AccountReadOperation<
   /** Response schema. Validated after the handler, before the response. */
   readonly output: TOutput;
   /** Delegable scope a non-owner principal must hold. */
-  readonly requiredScope: AgentCapabilityScope;
+  readonly requiredScope: typeof ACCOUNT_READ_SCOPE;
   /** Published HTTP method. */
   readonly method: AccountReadMethod;
   /** Published HTTP path. */
@@ -106,9 +111,6 @@ export function defineAccountReadOperation<
 >(operation: TOperation): TOperation {
   return operation;
 }
-
-/** Coarse scope every account read is gated by (story.5006 rename). */
-export const ACCOUNT_READ_SCOPE = "account:read" as const;
 
 export const polyAccountReadCopyTradePnlOperation = defineAccountReadOperation({
   ...polyResearchCopyTradePnlOperation,

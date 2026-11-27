@@ -12,6 +12,8 @@
  *     pending request selected by a transaction-local approval-token hash.
  *   - GRANT_IS_AUTHORITY: this row records lifecycle UX; only the linked
  *     agent_capability_grants row authorizes data-plane access.
+ *   - EXPAND_PHASE (story.0090, migration 0093): Poly's grants were copied into `agent_roles`; no code reads or writes this table. It stays only so the
+ *     tables of the DB and the migration snapshot agree until the CONTRACT migration drops it in a later release (task.0205 follow-up). Not exported.
  * Side-effects: none (schema only)
  * @public
  */

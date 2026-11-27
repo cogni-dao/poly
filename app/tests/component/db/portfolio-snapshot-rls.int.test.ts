@@ -19,19 +19,17 @@
  *     Asserting the grant reads actual rows is the whole point of this file.
  *   - WRITES_STAY_OWNER_ONLY — the new policies are FOR SELECT, so delegation
  *     widens reads and nothing else.
- *   - SCOPE_ALIAS_TOLERANCE — a grant holding only the legacy
- *     `performance:read` must read exactly as well as one holding
- *     `account:read`, matching `aliasesFor()` and migration 0074.
+ *   - ONE_LIVE_PREDICATE — since migration 0093 the policies call `agent_has_scope()` of the shared grant plane (`agent_roles`); the legacy
+ *     `performance:read` alias is gone and its grants were copied forward as `account:read`.
  * Side-effects: IO (testcontainers Postgres)
  * Links: task.1791070962, migrations/0075_portfolio_snapshot_delegated_select.sql
  * @internal
  */
 
 import { randomUUID } from "node:crypto";
-import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import { toUserId, userActor } from "@cogni/ids";
-import type { AgentCapabilityScope } from "@cogni/poly-node-contracts";
 import type { PolyAccountPortfolioSnapshotOutput } from "@cogni/poly-node-contracts";
+import { seedAccountGrant } from "@tests/_fixtures/db/account-grants";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, inArray, type SQL, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -121,8 +119,7 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
   const ownerA = tenant("Portfolio owner A");
   const ownerB = tenant("Portfolio owner B");
   const canonicalAgent = principal("account:read agent");
-  const legacyAgent = principal("performance:read agent");
-  const wrongScopeAgent = principal("research:run agent");
+  const wrongScopeAgent = principal("other-scope agent");
   const expiredAgent = principal("expired-grant agent");
   const revokedAgent = principal("revoked-grant agent");
   const ungrantedAgent = principal("ungranted agent");
@@ -131,7 +128,6 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     ownerA,
     ownerB,
     canonicalAgent,
-    legacyAgent,
     wrongScopeAgent,
     expiredAgent,
     revokedAgent,
@@ -161,33 +157,22 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       }))
     );
 
-    const grant = (
-      grantee: Principal,
-      scopes: AgentCapabilityScope[],
-      extra: Record<string, unknown> = {}
-    ) => ({
-      billingAccountId: ownerA.billingAccountId,
-      granteePrincipalId: grantee.userId,
-      scopes,
-      expiresAt: future,
-      createdByUserId: ownerA.userId,
-      ...extra,
-    });
+    const grant = (grantee: Principal, extra: Partial<Parameters<typeof seedAccountGrant>[1]> = {}) =>
+      seedAccountGrant(seedDb, {
+        principalId: grantee.userId,
+        accountId: ownerA.billingAccountId,
+        approvedBy: ownerA.userId,
+        expiresAt: future,
+        ...extra,
+      });
 
-    await seedDb.insert(agentCapabilityGrants).values([
-      grant(canonicalAgent, ["account:read"]),
-      grant(legacyAgent, ["performance:read"]),
-      grant(wrongScopeAgent, ["research:run"]),
-      grant(expiredAgent, ["account:read"], {
-        expiresAt: past,
-        createdAt: new Date("1999-01-01T00:00:00.000Z"),
-        updatedAt: past,
-      }),
-      grant(revokedAgent, ["account:read"], {
-        revokedAt: new Date("2026-10-04T00:00:00.000Z"),
-        revokedByUserId: ownerA.userId,
-      }),
-    ]);
+    await grant(canonicalAgent);
+    await grant(wrongScopeAgent, { scope: "knowledge:contribute" });
+    await grant(expiredAgent, { grantedAt: new Date("1999-01-01T00:00:00.000Z"), expiresAt: past });
+    await grant(revokedAgent, {
+      grantedAt: new Date("2026-10-01T00:00:00.000Z"),
+      revokedAt: new Date("2026-10-04T00:00:00.000Z"),
+    });
 
     const connection = (owner: Tenant, addr: `0x${string}`, funder?: string) => ({
       billingAccountId: owner.billingAccountId,
@@ -423,11 +408,8 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     expect(Number(balance?.pol)).toBeCloseTo(1.25);
   });
 
-  it.each([
-    ["canonical account:read", () => canonicalAgent],
-    ["legacy performance:read", () => legacyAgent],
-  ])(
-    "lets a %s grant read real rows, not an empty set",
+  it.each([["account:read", () => canonicalAgent]])(
+    "lets a live %s grant read real rows, not an empty set",
     async (_label, who) => {
       const connections = await readConnection(who().userId);
       const balances = await readBalances(who().userId);
@@ -571,11 +553,11 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
      * Adding an RLS policy rewrites the plan of every SELECT on the table,
      * because the policy expression becomes part of the query. The identity
      * read runs on EVERY dashboard tick, so a policy that introduced a
-     * sequential scan — of the table or of `agent_capability_grants` — would be
+     * sequential scan of the table would be
      * a latency regression hiding inside a security fix.
      *
-     * WHAT IS ASSERTED: no sequential scan anywhere, and the grant lookup is a
-     * SubPlan rather than a per-row join. Deliberately NOT asserted: which
+     * WHAT IS ASSERTED: no sequential scan anywhere, and the grant lookup is the
+     * `agent_has_scope()` filter, not a join. Deliberately NOT asserted: which
      * index the planner picks. That is cost-based and fixture-size dependent.
      * With only a few owners a billing_accounts sequential scan is cheaper
      * and legitimate, so these tests add unrelated owner/account cardinality
@@ -618,17 +600,15 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       expect(plan).not.toContain('"Node Type":"Seq Scan"');
     });
 
-    it("evaluates both policy branches as indexed subplans, not per-row joins", async () => {
+    it("evaluates the owner branch as one hashed subplan and the delegated branch as the one grant predicate", async () => {
       const plan = await identityPlan(canonicalAgent.userId);
 
-      // The owner branch and the delegated branch each collapse to a SubPlan
-      // the planner hashes and evaluates ONCE per statement — so the policy
-      // costs a constant, not one probe per candidate row. This is the real
-      // performance property of migration 0075 and it is better than a
-      // per-row index probe.
+      // The owner branch collapses to a SubPlan the planner hashes and evaluates ONCE per statement. The delegated branch is the package's
+      // `agent_has_scope()`, evaluated only for the rows the account-keyed index scan already selected (a constant per candidate row, each
+      // an index probe on agent_roles) — the same predicate `authorize()` asks, so the app check and RLS cannot disagree.
       expect(plan).toContain("SubPlan");
       expect(plan).toContain('"Relation Name":"billing_accounts"');
-      expect(plan).toContain("agent_capability_grants");
+      expect(plan).toContain("agent_has_scope");
       // Neither side of the OR may fall back to a scan. One generic check, not
       // a key-order-specific one: JSON key order is not a stable contract, so
       // an assertion pinned to it can never fail and is worse than none.

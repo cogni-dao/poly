@@ -652,6 +652,20 @@
       "when": 1795678251452,
       "tag": "0092_agent_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1795794568484,
+      "tag": "0093_account_grants_one_plane",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1795794619239,
+      "tag": "0094_agent_wallet_is_not_a_payee",
+      "breakpoints": true
     }
   ]
 }

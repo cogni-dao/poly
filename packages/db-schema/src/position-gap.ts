@@ -36,15 +36,9 @@ function ownsAccount(column: AnyPgColumn) {
   )`;
 }
 
+/** Owner, or a live `account:read` grant: the one SQL predicate `agent_has_scope()` of `@cogni/agent-grants` (migration 0093). */
 function mayReadAccount(column: AnyPgColumn) {
-	return sql`${ownsAccount(column)} OR EXISTS (
-    SELECT 1 FROM agent_capability_grants grant_row
-    WHERE grant_row.billing_account_id = ${column}
-      AND grant_row.grantee_principal_id = current_setting('app.current_user_id', true)
-      AND grant_row.revoked_at IS NULL
-      AND grant_row.expires_at > now()
-      AND grant_row.scopes && ARRAY['account:read','performance:read']::text[]
-  )`;
+	return sql`${ownsAccount(column)} OR agent_has_scope(${column}, 'account:read')`;
 }
 
 /** One auditable whole-book reconciliation attempt. */

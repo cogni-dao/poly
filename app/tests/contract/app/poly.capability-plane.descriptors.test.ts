@@ -19,7 +19,6 @@
  */
 
 import {
-  AGENT_CAPABILITY_SCOPES,
   defineAccountReadOperation,
   POLY_ACCOUNT_READ_OPERATIONS,
   polyAccountReadCopySetupOperation,
@@ -116,7 +115,6 @@ describe("account-read descriptors", () => {
       // accepted here. What must never happen is a third, unvetted source.
       expect(["input", "principal"]).toContain(operation.accountFrom);
       expect(operation.requiredScope).toBe("account:read");
-      expect(AGENT_CAPABILITY_SCOPES).toContain(operation.requiredScope);
       expect(operation.path.startsWith("/api/v1/poly/")).toBe(true);
       expect(operation.summary.length).toBeGreaterThan(0);
     }

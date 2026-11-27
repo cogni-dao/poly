@@ -38,7 +38,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import {
   polyCopyTargetConditionBaseline,
   polyCopyTradeDecisions,
@@ -57,6 +56,10 @@ import {
 import { polyWalletConnections } from "@cogni/db-schema/wallet-connections";
 import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
 import { toUserId, userActor } from "@cogni/ids";
+import {
+  deleteAccountGrants,
+  seedAccountGrant,
+} from "@tests/_fixtures/db/account-grants";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, inArray } from "drizzle-orm";
 import { NextRequest } from "next/server";
@@ -210,19 +213,14 @@ describe("copy-operations delegated RLS", () => {
       raw: { title: "Will the current-position fallback resolve?" },
     });
 
-    // The delegate holds ONLY the canonical scope name, so this also re-proves
-    // that migration 0076's policy body uses the same OVERLAP predicate as 0074.
-    // A policy requiring the legacy name would authorize and then read zero
-    // rows — "no data" instead of "denied", the exact trap 0074 documents.
-    await seedDb.insert(agentCapabilityGrants).values([
-      {
-        billingAccountId: ownerA.billingAccountId,
-        granteePrincipalId: delegate.userId,
-        scopes: ["account:read"],
-        expiresAt: future,
-        createdByUserId: ownerA.userId,
-      },
-    ]);
+    // The delegate holds ONE shared `account:read` grant (an `agent_roles` row). Migration 0093's policy body calls `agent_has_scope()`, the same live
+    // predicate `authorize()` uses, so the app check and the row-level policy cannot disagree ("no data" instead of "denied").
+    await seedAccountGrant(seedDb, {
+      principalId: delegate.userId,
+      accountId: ownerA.billingAccountId,
+      approvedBy: ownerA.userId,
+      expiresAt: future,
+    });
 
     await seedDb.insert(polyCopyTradeTargets).values([
       {
@@ -604,11 +602,7 @@ describe("copy-operations delegated RLS", () => {
     await seedDb
       .delete(polyTraderWallets)
       .where(eq(polyTraderWallets.id, traderWalletA));
-    await seedDb
-      .delete(agentCapabilityGrants)
-      .where(
-        eq(agentCapabilityGrants.billingAccountId, ownerA.billingAccountId),
-      );
+    await deleteAccountGrants(seedDb, [ownerA.billingAccountId]);
     await seedDb
       .delete(billingAccounts)
       .where(inArray(billingAccounts.id, accounts));

@@ -2672,6 +2672,8 @@ function createContainer(): Container {
 		nodeAdmin: createApproversNodeAdminAuthority(),
 		log,
 		toolBundle: [...POLY_CORE_TOOL_BUNDLE],
+		ensureBillingAccount: async (userId) =>
+			(await serviceAccountService.getOrCreateBillingAccountForUser({ userId })).id,
 	});
 	const nodeAdminPort = createNodeAdminPort(agentAuthority);
 
