@@ -110,7 +110,6 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     if (!sessionUser) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    const { id } = await context.params;
     logEvent(ctx.log, EVENT_NAMES.WORK_ITEMS_DELETE_RETIRED, {
       reqId: ctx.reqId, routeId: "work.items.delete", status: 410,
       outcome: "refused", errorCode: "gone",
