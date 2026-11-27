@@ -2,7 +2,7 @@
 -- APPROVED: CEO direction 2026-11-26/27 ("the poly quant rls read access is now going to be available as a grant in the new identity (plugin) system"): forward-looking only, no
 --   rename shim, no dual read. Live rows are copied forward, and any row that cannot be mapped ABORTS the migration.
 -- EXPAND, THEN CONTRACT: `agent_capability_grants` and `agent_access_requests` stay in the database, untouched, so a pod still running the previous release keeps working while
---   this release rolls out. No code of this release reads or writes either table. A later CONTRACT migration (the task filed under task.0205) drops them in the release after this
+--   this release rolls out. No code of this release reads or writes either table. A later CONTRACT migration (task.0210, under task.0205) drops them in the release after this
 --   one is live on production. That migration must first prove that no legacy row is missing from agent_roles (a row written by an old pod after this copy).
 -- What it does, in one transaction (drizzle runs one migration file as one transaction; any RAISE rolls back every statement, including the FORCE lifts):
 --   1. Adds the package SQL tail `agent_account_grants.sql` (agent-grants 0.11.0): the table privilege and `agent_has_scope(account, scope)`, the ONE live predicate.

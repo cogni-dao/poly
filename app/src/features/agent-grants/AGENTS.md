@@ -22,7 +22,7 @@ stay until the contract migration.
   (`POST /api/v1/agent/access-requests`). Poly's route wrapper has no `sameDoor` option, so nothing in the package guards these routes. Enforcement is this directory's
   `authorize()` (through `executeAccountRead`) plus the delegated SELECT policies, both asking `agent_has_scope()`. A new account-read route must call `executeAccountRead`.
 - **Expand phase.** `agent_capability_grants` and `agent_access_requests` are still in the database (migration 0093 copied them and dropped nothing). No code reads or writes them;
-  the contract migration drops them in a later release.
+  the contract migration (task.0210) drops them in a later release.
 
 - `account:read` is the only delegable scope. The owner approves it on `/profile` (`/api/v1/agent-access/mine`); an outside agent asks at
   `POST /api/v1/agent/access-requests`. There is no `performance:read` alias and no Poly-only scope. A narrower grant, if ever needed, is a
