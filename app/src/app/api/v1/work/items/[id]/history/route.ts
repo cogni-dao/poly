@@ -26,16 +26,18 @@ export const GET = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
   { routeId: "work.items.history", auth: { mode: "required", getSessionUser } },
-  async (ctx, _request, sessionUser, context) => {
+  async (ctx, request, sessionUser, context) => {
     if (!sessionUser) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
     if (!context) throw new Error("context required for dynamic routes");
     const { id } = await context.params;
     const startedAt = Date.now();
+    const searchParams = new URL(request.url).searchParams;
     const { status, body, log } = await readWorkItemHistory(
       getContainer().doltgresWorkItems,
-      id
+      id,
+      { view: searchParams.get("view"), cursor: searchParams.get("cursor") }
     );
     const { event: _event, errorName, ...fields } = log;
     logEvent(ctx.log, EVENT_NAMES.WORK_ITEMS_HISTORY_READ, {
