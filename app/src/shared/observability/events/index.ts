@@ -56,6 +56,7 @@ export const EVENT_NAMES = {
 	WORK_ITEMS_PATCH_SUCCESS: "work.items.patch_success",
 	WORK_ITEMS_PATCH_REFUSED: "work.items.patch_refused",
 	WORK_ITEMS_DELETE_RETIRED: "work.items.delete_retired",
+	WORK_ITEMS_PR_REPO_UNPINNED: "adapter.work_items.pr_repo_unpinned",
 	// The single-item read (story.0085): one terminal event per GET from the package route core; ids, parts and codes only. The names repeat WORK_ITEM_READ_EVENTS.
 	WORK_ITEMS_GET_SUCCESS: "work.items.get_success",
 	WORK_ITEMS_GET_REFUSED: "work.items.get_refused",

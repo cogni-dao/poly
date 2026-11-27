@@ -2536,7 +2536,7 @@ function createContainer(): Container {
 		const workItemClient = buildWorkItemClient();
     const prRepos = resolvePrRepoPin(env.WORK_ITEMS_PR_REPO);
     if (prRepos.reason || prRepos.ignored.length) log.warn({
-      event: "adapter.work_items.pr_repo_unpinned", reason: prRepos.reason,
+      event: EVENT_NAMES.WORK_ITEMS_PR_REPO_UNPINNED, reason: prRepos.reason,
       ignored: prRepos.ignored.length,
     }, "Work-item PR repository pin is absent or incomplete");
 		workItemAdapter = createPolyWorkItemAdapter(

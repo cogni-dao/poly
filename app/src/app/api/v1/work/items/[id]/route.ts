@@ -33,6 +33,7 @@ import {
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -110,7 +111,10 @@ export const DELETE = wrapRouteHandlerWithLogging<{
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
     const { id } = await context.params;
-    ctx.log.info({ event: "work.items.delete_retired", workItemId: id, status: 410 }, "work.items.delete_retired");
+    logEvent(ctx.log, EVENT_NAMES.WORK_ITEMS_DELETE_RETIRED, {
+      reqId: ctx.reqId, routeId: "work.items.delete", status: 410,
+      outcome: "refused", errorCode: "gone",
+    });
     return NextResponse.json({
       error: "gone",
       message: "Deletion is retired. Read the current revision, then PATCH with reason, expectedRevision and set.status=cancelled; history and artifacts are preserved.",

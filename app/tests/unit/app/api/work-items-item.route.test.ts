@@ -42,7 +42,7 @@ vi.mock("@/bootstrap/http", () => ({
 		(_config: unknown, handler: (...args: unknown[]) => Promise<Response>) =>
 		(request: Request, context: unknown) =>
 			handler(
-				{ log: { info: vi.fn() } },
+				{ reqId: "test-request", log: { info: vi.fn(), error: vi.fn() } },
 				request,
 				SESSION_USER,
 				context,
