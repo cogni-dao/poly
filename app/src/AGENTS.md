@@ -22,6 +22,7 @@ Next.js application source implementing hexagonal architecture for a fully web3-
 - [Environment modes](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/environments.md)
 - [DB schema](./shared/db/schema.ts) - Users, billing accounts, ledger, virtual keys
 - [Auth implementation](auth.ts) - NextAuth.js with SIWE provider
+- [Node extensions](node-extensions.ts) - Poly's composition root for the shared grant plane. `routeOnlyCapabilities` there is catalog metadata (it makes `account:read` askable); it does not enforce Poly's routes. Enforcement is `features/agent-grants` `authorize()` plus the delegated SELECT policies, both asking `agent_has_scope()`.
 
 ## Boundaries
 

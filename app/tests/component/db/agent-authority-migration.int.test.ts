@@ -11,9 +11,12 @@
  *   - APP_ROLE_WALL: the NOBYPASSRLS app role reads no `agent_roles` row and writes neither table; it reads `agent_principals`.
  *   - SERVICE_ROLE_PRIVILEGES: the BYPASSRLS service role reads and writes both tables (the default privileges production relies on).
  *   - SEED_IS_EXACT_AND_IDEMPOTENT: two credential-less principals, two `users` rows with no wallet, zero role rows; re-running the tail changes nothing.
- *   - COPY_FORWARD_LOSES_NOTHING (0093): every legacy grant becomes one `agent_roles` row (same id, approver, dates, account), every pending unexpired request
- *     becomes an OFF ask with its link hash, outside agents get an external principal row, and a legacy row that cannot map ABORTS the migration (G0, G1a-d, G2) with
- *     the whole transaction rolled back. The drop guard blocks while anything still names a legacy table.
+ *   - COPY_FORWARD_LOSES_NOTHING (0093, expand-only): every live or revoked legacy grant becomes one `agent_roles` row (same id, approver, dates, account), every pending
+ *     unexpired request becomes an OFF ask with its link hash, only this plane's outside agents get an external principal row, and a legacy row that cannot map ABORTS the
+ *     migration (G0, G1a-d, G2, G3) with the whole transaction rolled back. Guards count only live rows; expired never-revoked grants are left behind. The legacy tables are
+ *     byte-identical afterwards (the contract migration drops them in a later release).
+ *   - WALLET_GUARD (0094): the released `runAgentWalletGuardConformance` row passes over the real chain (the function exists and exactly the two payout leaf tables carry it),
+ *     and the function refuses a bound or stored agent wallet.
  *   - ONE_LIVE_PREDICATE (0093): the 11 delegated SELECT policies call `agent_has_scope()`; no policy, view or function names a legacy table.
  *   - GRANT_CONFORMANCE: `runGrantConformance` passes over `createPostgresAgentGrantsStore` on the service role.
  *   - POLY_314_PURGE: on a database holding the reverted poly#314 leftovers (the three real #314 migrations, applied on top of the real chain through 0091),
@@ -21,7 +24,6 @@
  * Omissions, by design (recorded in the 0092 header too):
  *   - `runCredentialConformance`: Poly adds NO `agent_credentials` table, credential routes or trigger in this PR, so there is nothing for that suite to run
  *     against. Adopting credentials means the package tail `agent_credentials.sql` plus that suite, in the PR that adds the credential routes.
- *   - `runAgentWalletGuardConformance`: Poly binds no agent wallet and has no wallet-guard trigger yet (node-template 0043 is not ported).
  *   - A separate migration role: Poly migrates as the database owner, which IS the app role (provision.sh model; the global setup runs `db:migrate:direct`
  *     as `app_<node>`). The migration role here is a distinct NOBYPASSRLS login that inherits the app role, as red#88's, so a migration run by a role other
  *     than the connection role is exercised too.
@@ -38,7 +40,10 @@ import {
   createPostgresAgentGrantsStore,
   type SqlTag,
 } from "@cogni/agent-grants";
-import { runGrantConformance } from "@cogni/agent-grants/grants-conformance";
+import {
+  runAgentWalletGuardConformance,
+  runGrantConformance,
+} from "@cogni/agent-grants/grants-conformance";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -199,10 +204,15 @@ describe("migration 0092: agent authority tables", () => {
         { tablename: "agent_principals", policyname: "agent_principals_read", cmd: "SELECT" },
         { tablename: "agent_roles", policyname: "agent_roles_account_self_read", cmd: "SELECT" },
       ]);
-      // No credentials, payer or org tables (they join in later PRs), and no legacy grant plane (0093 dropped it).
+      // No credentials, payer or org tables (they join in later PRs). The two legacy grant tables stay until the CONTRACT migration (0093 is expand-only).
       expect(
         await service`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'agent\\_%' ORDER BY 1`
-      ).toEqual([{ tablename: "agent_principals" }, { tablename: "agent_roles" }]);
+      ).toEqual([
+        { tablename: "agent_access_requests" },
+        { tablename: "agent_capability_grants" },
+        { tablename: "agent_principals" },
+        { tablename: "agent_roles" },
+      ]);
     });
   });
 
@@ -298,6 +308,9 @@ async function seedLegacy(service: postgres.Sql) {
     agentC: randomUUID(), // expired, never revoked
     agentD: randomUUID(), // pending, unexpired ask
     agentE: randomUUID(), // denied request only
+    agentR: randomUUID(), // renewal: a lapsed grant beside a new pending ask
+    agentX: randomUUID(), // a lapsed grant on one account beside a live grant on another
+    agentM: randomUUID(), // a live grant that also names a reserved scope
     human: randomUUID(), // a grantee with a wallet: a person, not an agent
     accountA: randomUUID(),
     accountB: randomUUID(),
@@ -305,30 +318,49 @@ async function seedLegacy(service: postgres.Sql) {
     grantB: randomUUID(),
     grantC: randomUUID(),
     grantH: randomUUID(),
+    grantR: randomUUID(),
+    grantX1: randomUUID(),
+    grantX2: randomUUID(),
+    grantM: randomUUID(),
     requestA: randomUUID(),
     requestD: randomUUID(),
     requestE: randomUUID(),
+    requestR: randomUUID(),
   };
-  const agents = [ids.agentA, ids.agentB, ids.agentC, ids.agentD, ids.agentE];
+  const agents = [ids.agentA, ids.agentB, ids.agentC, ids.agentD, ids.agentE, ids.agentR, ids.agentX, ids.agentM];
   for (const id of [ids.owner, ids.ownerB, ...agents])
     await service`INSERT INTO users(id, name) VALUES (${id}, ${`legacy ${id.slice(0, 6)}`})`;
   await service`INSERT INTO users(id, name, wallet_address) VALUES (${ids.human}, 'legacy human', '0x00000000000000000000000000000000000000aa')`;
   await service`INSERT INTO billing_accounts(id, owner_user_id, balance_credits) VALUES (${ids.accountA}, ${ids.owner}, 0), (${ids.accountB}, ${ids.ownerB}, 0)`;
   const t = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
-  await service`INSERT INTO agent_capability_grants(id, billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id, created_at)
-    VALUES (${ids.grantA}, ${ids.accountA}, ${ids.agentA}, ARRAY['performance:read'], ${t(20)}, ${ids.owner}, ${t(-5)})`;
-  await service`INSERT INTO agent_capability_grants(id, billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id, created_at, revoked_at, revoked_by_user_id)
-    VALUES (${ids.grantB}, ${ids.accountA}, ${ids.agentB}, ARRAY['account:read','performance:read'], ${t(10)}, ${ids.owner}, ${t(-9)}, ${t(-2)}, ${ids.owner})`;
-  await service`INSERT INTO agent_capability_grants(id, billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id, created_at)
-    VALUES (${ids.grantC}, ${ids.accountB}, ${ids.agentC}, ARRAY['account:read'], ${t(-1)}, ${ids.ownerB}, ${t(-31)})`;
-  await service`INSERT INTO agent_capability_grants(id, billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id, created_at)
-    VALUES (${ids.grantH}, ${ids.accountB}, ${ids.human}, ARRAY['account:read'], ${t(5)}, ${ids.ownerB}, ${t(-1)})`;
+  const grant = (
+    id: string,
+    account: string,
+    grantee: string,
+    scopes: string[],
+    createdDays: number,
+    expiresDays: number,
+    approver: string,
+    revoked?: { days: number }
+  ) =>
+    service`INSERT INTO agent_capability_grants(id, billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id, created_at, revoked_at, revoked_by_user_id)
+      VALUES (${id}, ${account}, ${grantee}, ${scopes}, ${t(expiresDays)}, ${approver}, ${t(createdDays)}, ${revoked ? t(revoked.days) : null}, ${revoked ? approver : null})`;
+  await grant(ids.grantA, ids.accountA, ids.agentA, ["performance:read"], -5, 20, ids.owner);
+  await grant(ids.grantB, ids.accountA, ids.agentB, ["account:read", "performance:read"], -9, 10, ids.owner, { days: -2 });
+  await grant(ids.grantC, ids.accountB, ids.agentC, ["account:read"], -31, -1, ids.ownerB);
+  await grant(ids.grantH, ids.accountB, ids.human, ["account:read"], -1, 5, ids.ownerB);
+  await grant(ids.grantR, ids.accountA, ids.agentR, ["performance:read"], -40, -10, ids.owner);
+  await grant(ids.grantX1, ids.accountA, ids.agentX, ["performance:read"], -40, -10, ids.owner);
+  await grant(ids.grantX2, ids.accountB, ids.agentX, ["performance:read"], -3, 27, ids.ownerB);
+  await grant(ids.grantM, ids.accountB, ids.agentM, ["performance:read", "research:run"], -2, 28, ids.ownerB);
   const hash = (c: string) => c.repeat(64);
   await service`INSERT INTO agent_access_requests(id, requester_principal_id, requester_display_name, requested_scopes, grant_expires_at, approval_token_hash, approval_token_expires_at,
       status, billing_account_id, approved_grant_id, decision_by_user_id, decided_at, token_consumed_at, created_at)
     VALUES (${ids.requestA}, ${ids.agentA}, 'Agent A', ARRAY['performance:read'], ${t(20)}, ${hash("a")}, ${t(-4)}, 'approved', ${ids.accountA}, ${ids.grantA}, ${ids.owner}, ${t(-5)}, ${t(-5)}, ${t(-6)})`;
   await service`INSERT INTO agent_access_requests(id, requester_principal_id, requester_display_name, requested_scopes, grant_expires_at, approval_token_hash, approval_token_expires_at, status, created_at)
     VALUES (${ids.requestD}, ${ids.agentD}, 'Agent D', ARRAY['performance:read'], ${t(25)}, ${hash("d")}, ${t(1)}, 'pending', ${t(-0.1)})`;
+  await service`INSERT INTO agent_access_requests(id, requester_principal_id, requester_display_name, requested_scopes, grant_expires_at, approval_token_hash, approval_token_expires_at, status, created_at)
+    VALUES (${ids.requestR}, ${ids.agentR}, 'Agent R', ARRAY['performance:read'], ${t(25)}, ${hash("r")}, ${t(1)}, 'pending', ${t(-0.1)})`;
   await service`INSERT INTO agent_access_requests(id, requester_principal_id, requester_display_name, requested_scopes, grant_expires_at, approval_token_hash, approval_token_expires_at,
       status, billing_account_id, decision_by_user_id, decided_at, token_consumed_at, created_at)
     VALUES (${ids.requestE}, ${ids.agentE}, 'Agent E', ARRAY['performance:read'], ${t(25)}, ${hash("e")}, ${t(-3)}, 'denied', ${ids.accountA}, ${ids.owner}, ${t(-4)}, ${t(-4)}, ${t(-5)})`;
@@ -337,28 +369,38 @@ async function seedLegacy(service: postgres.Sql) {
 
 const legacyTables = async (sql: postgres.Sql) =>
   sql`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('agent_capability_grants','agent_access_requests') ORDER BY 1`;
+const legacyFingerprint = async (sql: postgres.Sql) => ({
+  grants: await sql`SELECT md5(string_agg(t::text, '|' ORDER BY t.id)) AS md5, count(*)::int AS n FROM agent_capability_grants t`,
+  requests: await sql`SELECT md5(string_agg(t::text, '|' ORDER BY t.id)) AS md5, count(*)::int AS n FROM agent_access_requests t`,
+  force: await sql`SELECT relname, relforcerowsecurity FROM pg_class WHERE relname IN ('agent_capability_grants','agent_access_requests') AND relkind = 'r' ORDER BY 1`,
+});
 
 // Poly migrates as the database owner, which IS the app role (provision.sh model), so `GRANT EXECUTE ... TO CURRENT_USER` in the package tail names the app role.
-describe("migration 0093: Poly's account grant moves onto the shared plane", () => {
-  it("copies every legacy grant and pending ask forward, drops the legacy plane, and backfills outside agents", async () => {
+describe("migration 0093 (expand): Poly's account grant moves onto the shared plane and drops nothing", () => {
+  it("copies every live or revoked grant and every pending ask forward, leaves the legacy tables byte-identical, and labels only this plane's outside agents", async () => {
     await fixture(through92Template, async ({ app, service }) => {
       const ids = await seedLegacy(service);
       const before = await service`SELECT id, created_at, expires_at, revoked_at FROM agent_capability_grants ORDER BY id`;
-      expect(before).toHaveLength(4);
-      await migrate(drizzle(app), { migrationsFolder: migrations }); // applies only 0093
+      const legacyBefore = await legacyFingerprint(service);
+      expect(before).toHaveLength(8);
+      await migrate(drizzle(app), { migrationsFolder: migrations }); // applies 0093 and 0094
 
-      expect(await legacyTables(service)).toEqual([]);
+      // EXPAND: nothing was dropped or changed, and FORCE row-level security is back on the legacy tables.
+      expect(await legacyFingerprint(service)).toEqual(legacyBefore);
+      expect(legacyBefore.force.every((r) => r.relforcerowsecurity === true)).toBe(true);
+
       const rows = await service`SELECT id, principal_user_id, scope, approved_by, granted_at, requested_by, created_at, revoked_at, resource, account_id, expires_at, link_hash, link_expires_at
         FROM agent_roles WHERE resource = 'account' ORDER BY id`;
-      expect(rows).toHaveLength(5); // 4 grants + 1 pending ask; the denied request is lifecycle history and is not carried
+      // 5 grants carry authority or history (A live, B revoked, H live, X2 live, M live) + 2 pending asks (D, R). Expired never-revoked grants (C, R's, X1) and the denied request (E) are not carried.
+      expect(rows).toHaveLength(7);
       const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
       const was = Object.fromEntries(before.map((r) => [r.id, r]));
-      // Grant rows keep id, approver, dates and account; the alias becomes the one scope; both alias names collapse to one row.
       for (const [grant, agent, account, owner] of [
         [ids.grantA, ids.agentA, ids.accountA, ids.owner],
         [ids.grantB, ids.agentB, ids.accountA, ids.owner],
-        [ids.grantC, ids.agentC, ids.accountB, ids.ownerB],
         [ids.grantH, ids.human, ids.accountB, ids.ownerB],
+        [ids.grantX2, ids.agentX, ids.accountB, ids.ownerB],
+        [ids.grantM, ids.agentM, ids.accountB, ids.ownerB],
       ] as const) {
         expect(byId[grant]).toMatchObject({ principal_user_id: agent, scope: "account:read", approved_by: owner, resource: "account", account_id: account, link_hash: null });
         expect(byId[grant].granted_at).toEqual(was[grant].created_at);
@@ -366,26 +408,59 @@ describe("migration 0093: Poly's account grant moves onto the shared plane", () 
         expect(byId[grant].expires_at).toEqual(was[grant].expires_at); // a grant still ends on its own date
         expect(byId[grant].revoked_at).toEqual(was[grant].revoked_at);
       }
+      for (const left of [ids.grantC, ids.grantR, ids.grantX1, ids.requestE]) expect(byId[left]).toBeUndefined();
       expect(byId[ids.grantA].requested_by).toBe(ids.agentA); // the approved request lives on as requested_by
       expect(byId[ids.grantB].revoked_at).not.toBeNull();
-      // The pending ask is an OFF row carrying the legacy link hash, so an outstanding link still opens.
-      expect(byId[ids.requestD]).toMatchObject({
-        principal_user_id: ids.agentD,
-        scope: "account:read",
-        approved_by: null,
-        granted_at: null,
-        account_id: null,
-        revoked_at: null,
-        link_hash: "d".repeat(64),
-      });
-      expect(await service`SELECT 1 FROM agent_roles WHERE id = ${ids.requestE}`).toHaveLength(0);
-      // Outside agents get an external principal; a person (wallet) gets none; the owners (users, no wallet) are labelled by the same precision rule.
-      const principals = await service`SELECT user_id FROM agent_principals WHERE kind = 'external' AND user_id = ANY(${[ids.agentA, ids.agentB, ids.agentC, ids.agentD, ids.agentE, ids.human]}) ORDER BY user_id`;
-      expect(principals.map((r) => r.user_id).sort()).toEqual([ids.agentA, ids.agentB, ids.agentC, ids.agentD, ids.agentE].sort());
-      // FORCE RLS is back on every table the migration lifted it from.
-      const force = await service`SELECT relname FROM pg_class WHERE relname IN ('users','billing_accounts','user_bindings','user_profiles','identity_events','agent_roles','agent_principals')
-        AND relkind = 'r' AND NOT relforcerowsecurity`;
-      expect(force).toEqual([]);
+      // A pending ask is an OFF row carrying the legacy link hash, so an outstanding link still opens.
+      for (const [request, agent, c] of [[ids.requestD, ids.agentD, "d"], [ids.requestR, ids.agentR, "r"]] as const)
+        expect(byId[request]).toMatchObject({ principal_user_id: agent, scope: "account:read", approved_by: null, granted_at: null, account_id: null, revoked_at: null, link_hash: c.repeat(64) });
+      // Principals: only the outside agents this plane copied (A, B, D, R, X, M). A person (wallet), an agent with nothing copied (C, E) and the owners get none.
+      const labelled = await service`SELECT user_id FROM agent_principals WHERE kind = 'external' ORDER BY user_id`;
+      expect(labelled.map((r) => r.user_id).sort()).toEqual([ids.agentA, ids.agentB, ids.agentD, ids.agentR, ids.agentX, ids.agentM].sort());
+      // FORCE RLS is back on every table the migration lifted it from; billing_accounts was never touched.
+      expect(
+        await service`SELECT relname FROM pg_class WHERE relname IN ('users','billing_accounts','user_bindings','user_profiles','identity_events','agent_roles','agent_principals','agent_capability_grants','agent_access_requests')
+          AND relkind = 'r' AND NOT relforcerowsecurity`
+      ).toEqual([]);
+    });
+  }, 60_000);
+
+  it("passes the two real shapes the review reproduced: a lapsed grant beside a new pending ask, and a lapsed grant beside a live grant on another account", async () => {
+    await fixture(through92Template, async ({ app, service }) => {
+      const owner = randomUUID();
+      const other = randomUUID();
+      const renewal = randomUUID();
+      const split = randomUUID();
+      const accountA = randomUUID();
+      const accountB = randomUUID();
+      for (const [id, name] of [[owner, "owner"], [other, "other owner"], [renewal, "renewal agent"], [split, "split agent"]] as const)
+        await service`INSERT INTO users(id, name) VALUES (${id}, ${name})`;
+      await service`INSERT INTO billing_accounts(id, owner_user_id, balance_credits) VALUES (${accountA}, ${owner}, 0), (${accountB}, ${other}, 0)`;
+      const lapsed = (grantee: string, account: string, approver: string) =>
+        service`INSERT INTO agent_capability_grants(billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id, created_at)
+          VALUES (${account}, ${grantee}, ARRAY['performance:read'], now() - interval '2 days', ${approver}, now() - interval '32 days')`;
+      // Renewal: the grant lapsed, nothing revoked it, and the agent asked again.
+      await lapsed(renewal, accountA, owner);
+      await service`INSERT INTO agent_access_requests(requester_principal_id, requester_display_name, requested_scopes, grant_expires_at, approval_token_hash, approval_token_expires_at)
+        VALUES (${renewal}, 'Renewal', ARRAY['performance:read'], now() + interval '25 days', ${"9".repeat(64)}, now() + interval '1 day')`;
+      // Split: a lapsed grant on A and a live one on B.
+      await lapsed(split, accountA, owner);
+      await service`INSERT INTO agent_capability_grants(billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id)
+        VALUES (${accountB}, ${split}, ARRAY['performance:read'], now() + interval '20 days', ${other})`;
+
+      await migrate(drizzle(app), { migrationsFolder: migrations });
+      const rows = await service`SELECT principal_user_id, account_id, approved_by, link_hash FROM agent_roles WHERE resource = 'account' ORDER BY principal_user_id`;
+      expect(rows).toHaveLength(2);
+      expect(rows.find((r) => r.principal_user_id === renewal)).toMatchObject({ account_id: null, approved_by: null, link_hash: "9".repeat(64) }); // the ask, not the lapsed grant
+      expect(rows.find((r) => r.principal_user_id === split)).toMatchObject({ account_id: accountB, approved_by: other }); // the live grant, not the lapsed one
+    });
+  }, 60_000);
+
+  it("maps a live grant that also names a reserved scope to account:read, and a grant that names only reserved scopes aborts (G1a)", async () => {
+    await fixture(through92Template, async ({ app, service }) => {
+      const ids = await seedLegacy(service);
+      await migrate(drizzle(app), { migrationsFolder: migrations });
+      expect(await service`SELECT scope FROM agent_roles WHERE id = ${ids.grantM}`).toEqual([{ scope: "account:read" }]);
     });
   }, 60_000);
 
@@ -402,7 +477,10 @@ describe("migration 0093: Poly's account grant moves onto the shared plane", () 
       expect(await has(ids.agentA, ids.accountA)).toBe(true); // live
       expect(await has(ids.agentA, ids.accountB)).toBe(false); // foreign account
       expect(await has(ids.agentB, ids.accountA)).toBe(false); // revoked
-      expect(await has(ids.agentC, ids.accountB)).toBe(false); // expired
+      expect(await has(ids.agentC, ids.accountB)).toBe(false); // expired (not copied)
+      expect(await has(ids.agentR, ids.accountA)).toBe(false); // lapsed grant, pending ask: an ask opens no lock
+      expect(await has(ids.agentX, ids.accountA)).toBe(false); // the lapsed grant
+      expect(await has(ids.agentX, ids.accountB)).toBe(true); // the live grant
       expect(await has(ids.agentD, ids.accountA)).toBe(false); // an ask opens no lock
       expect(await has(ids.human, ids.accountB)).toBe(true);
       expect(await has(ids.agentE, ids.accountA)).toBe(false); // denied request: no grant
@@ -411,7 +489,7 @@ describe("migration 0093: Poly's account grant moves onto the shared plane", () 
     });
   }, 60_000);
 
-  it("rewrites exactly the 11 delegated SELECT policies onto agent_has_scope and leaves no object naming a legacy table", async () => {
+  it("rewrites exactly the 11 delegated SELECT policies onto agent_has_scope and leaves none naming a legacy table", async () => {
     await fixture(fullTemplate, async ({ service }) => {
       const policies = await service`SELECT tablename, policyname FROM pg_policies WHERE qual LIKE '%agent_has_scope%' ORDER BY tablename, policyname`;
       expect(policies).toEqual([
@@ -427,8 +505,10 @@ describe("migration 0093: Poly's account grant moves onto the shared plane", () 
         { tablename: "poly_wallet_connections", policyname: "poly_wallet_connections_delegated_select" },
         { tablename: "poly_wallet_grants", policyname: "poly_wallet_grants_delegated_select" },
       ]);
+      // Nothing outside the two legacy tables reads them any more (the contract migration can drop them).
       expect(
-        await service`SELECT tablename, policyname FROM pg_policies WHERE qual ~ 'agent_capability_grants|agent_access_requests' OR with_check ~ 'agent_capability_grants|agent_access_requests'`
+        await service`SELECT tablename, policyname FROM pg_policies WHERE tablename NOT IN ('agent_capability_grants','agent_access_requests')
+          AND (qual ~ 'agent_capability_grants|agent_access_requests' OR with_check ~ 'agent_capability_grants|agent_access_requests')`
       ).toEqual([]);
       expect(
         await service`SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prosrc ~ 'agent_capability_grants|agent_access_requests'`
@@ -445,25 +525,21 @@ describe("migration 0093: Poly's account grant moves onto the shared plane", () 
       await fixture(through92Template, async ({ app, service }) => {
         const ids = await seedLegacy(service);
         await mutate(service, ids);
-        const counts = async () => ({
-          grants: (await service`SELECT count(*)::int AS n FROM agent_capability_grants`)[0]?.n,
-          requests: (await service`SELECT count(*)::int AS n FROM agent_access_requests`)[0]?.n,
-        });
-        const before = await counts();
+        const before = await legacyFingerprint(service);
+        const accountRowsBefore = (await service`SELECT count(*)::int AS n FROM agent_roles WHERE resource = 'account'`)[0]?.n;
         await expect(migrate(drizzle(app), { migrationsFolder: migrations })).rejects.toMatchObject({
           cause: { message: expect.stringContaining(`guard ${guard}`) },
         });
-        // Nothing moved: both legacy tables and their rows, no account row, no function, no journal entry past 0092.
-        expect((await legacyTables(service)).length).toBe(2);
-        expect(await counts()).toEqual(before);
-        expect((await service`SELECT count(*)::int AS n FROM agent_roles WHERE resource = 'account' AND id IN (SELECT id FROM agent_capability_grants)`)[0]?.n).toBe(0);
-        expect(await service`SELECT 1 FROM pg_proc WHERE proname = 'agent_has_scope'`).toHaveLength(0);
+        // Nothing moved: legacy tables unchanged, no account row, no function, no principal, no wallet guard (0094 is in the same rolled-back batch).
+        expect(await legacyFingerprint(service)).toEqual(before);
+        expect((await service`SELECT count(*)::int AS n FROM agent_roles WHERE resource = 'account'`)[0]?.n).toBe(accountRowsBefore);
+        expect(await service`SELECT 1 FROM pg_proc WHERE proname IN ('agent_has_scope','agent_wallet_is_not_a_payee')`).toHaveLength(0);
         expect((await service`SELECT count(*)::int AS n FROM agent_principals WHERE kind = 'external'`)[0]?.n).toBe(0);
       });
     }, 60_000);
 
-  abort("G1a (a scope with no shared grant)", "G1a", async (s, ids) => {
-    await s`UPDATE agent_capability_grants SET scopes = ARRAY['account:read','research:run'] WHERE id = ${ids.grantA}`;
+  abort("G1a (a grant to copy with only reserved scopes)", "G1a", async (s, ids) => {
+    await s`UPDATE agent_capability_grants SET scopes = ARRAY['research:run'] WHERE id = ${ids.grantA}`;
   });
   abort("G1b (a grantee that approved itself)", "G1b", async (s, ids) => {
     await s`UPDATE agent_capability_grants SET created_by_user_id = grantee_principal_id WHERE id = ${ids.grantA}`;
@@ -471,37 +547,70 @@ describe("migration 0093: Poly's account grant moves onto the shared plane", () 
   abort("G1c (a revoker other than the approver)", "G1c", async (s, ids) => {
     await s`UPDATE agent_capability_grants SET revoked_by_user_id = ${ids.ownerB} WHERE id = ${ids.grantB}`;
   });
-  abort("G1d (two non-revoked grants for one grantee)", "G1d", async (s, ids) => {
+  abort("G1d (two LIVE grants for one grantee)", "G1d", async (s, ids) => {
     await s`INSERT INTO agent_capability_grants(billing_account_id, grantee_principal_id, scopes, expires_at, created_by_user_id)
       VALUES (${ids.accountB}, ${ids.agentA}, ARRAY['account:read'], now() + interval '5 days', ${ids.ownerB})`;
   });
-  abort("G2 (a pending ask beside a live grant of the same agent)", "G2", async (s, ids) => {
+  abort("G2 (a pending ask beside a LIVE grant of the same agent)", "G2", async (s, ids) => {
     await s`UPDATE agent_access_requests SET requester_principal_id = ${ids.agentA} WHERE id = ${ids.requestD}`;
+  });
+  abort("G3 (a user with no human trace that approved a grant)", "G3", async (s, ids) => {
+    // agentA is a grantee (to be labelled an outside agent) and also approves another grant: a signed-in human, which no-trace users never are.
+    await s`UPDATE agent_capability_grants SET created_by_user_id = ${ids.agentA} WHERE id = ${ids.grantH}`;
   });
   abort("G0 (account rows already in agent_roles)", "G0", async (s, ids) => {
     await s`INSERT INTO agent_roles(principal_user_id, scope, approved_by, granted_at, resource, account_id)
       VALUES (${ids.agentE}, 'account:read', ${ids.owner}, now(), 'account', ${ids.accountA})`;
   });
 
-  it("blocks the drop while a view still names a legacy table, and rolls the copy back", async () => {
-    await fixture(through92Template, async ({ app, service }) => {
-      await seedLegacy(service);
-      await app`CREATE VIEW legacy_grant_view AS SELECT id FROM agent_capability_grants`;
-      await expect(migrate(drizzle(app), { migrationsFolder: migrations })).rejects.toMatchObject({
-        cause: { message: expect.stringContaining("0093 drop guard") },
-      });
-      expect((await legacyTables(service)).length).toBe(2);
-      expect((await service`SELECT count(*)::int AS n FROM agent_roles WHERE resource = 'account'`)[0]?.n).toBe(0);
-    });
-  }, 60_000);
-
-  it("is a no-op on a database with no legacy rows: the plane is dropped and nothing is copied", async () => {
+  it("is a no-op on a database with no legacy rows: nothing is copied and the legacy tables stay", async () => {
     await fixture(through92Template, async ({ app, service }) => {
       await migrate(drizzle(app), { migrationsFolder: migrations });
-      expect(await legacyTables(service)).toEqual([]);
+      expect((await legacyTables(service)).length).toBe(2);
       expect(await service`SELECT * FROM agent_roles`).toHaveLength(0);
     });
   }, 60_000);
+});
+
+describe("migration 0094: AGENT_WALLET_IS_NOT_A_PAYEE", () => {
+  it("refuses a payee wallet that belongs to an agent principal (bound or stored), and allows a person's wallet", async () => {
+    await fixture(fullTemplate, async ({ app, service }) => {
+      const agentBound = randomUUID();
+      const agentStored = randomUUID();
+      const person = randomUUID();
+      await service`INSERT INTO users(id, name) VALUES (${agentBound}, 'bound agent')`;
+      await service`INSERT INTO users(id, name, wallet_address) VALUES (${agentStored}, 'stored agent', '0xAAAA00000000000000000000000000000000AAAA'), (${person}, 'person', '0xBBBB00000000000000000000000000000000BBBB')`;
+      await service`INSERT INTO user_bindings(id, user_id, provider, external_id) VALUES (${randomUUID()}, ${agentBound}, 'wallet', '0xCCCC00000000000000000000000000000000CCCC')`;
+      await service`INSERT INTO agent_principals(kind, user_id) VALUES ('external', ${agentBound}), ('external', ${agentStored})`;
+      // The guard is the trigger FUNCTION; attach it to a scratch table with the leaf shape so the case needs no attribution fixtures.
+      await app`CREATE TABLE scratch_leaf (account_lower text NOT NULL)`;
+      await app`CREATE TRIGGER scratch_leaf_guard BEFORE INSERT ON scratch_leaf FOR EACH ROW EXECUTE FUNCTION agent_wallet_is_not_a_payee()`;
+      // Leaf rows are written by the BYPASSRLS service role (the function is not security definer, so the invoker must see users and user_bindings).
+      for (const wallet of ["0xcccc00000000000000000000000000000000cccc", "0xaaaa00000000000000000000000000000000aaaa"])
+        await expect(service`INSERT INTO scratch_leaf(account_lower) VALUES (${wallet})`).rejects.toMatchObject({ code: "23514", constraint_name: "agent_wallet_is_not_a_payee" });
+      await service`INSERT INTO scratch_leaf(account_lower) VALUES ('0xbbbb00000000000000000000000000000000bbbb')`;
+      await service`INSERT INTO scratch_leaf(account_lower) VALUES ('0xdddd00000000000000000000000000000000dddd')`;
+      expect(await service`SELECT count(*)::int AS n FROM scratch_leaf`).toEqual([{ n: 2 }]);
+    });
+  }, 60_000);
+});
+
+// The released conformance row: the guard function exists and exactly the two payout leaf tables carry it (SUITE_GATES_RELEASE).
+let walletGuardService: postgres.Sql;
+runAgentWalletGuardConformance({
+  describe,
+  it: (name, run) =>
+    it(name, () =>
+      fixture(fullTemplate, async ({ service }) => {
+        walletGuardService = service;
+        await run();
+      })
+    ),
+  expect,
+  get sql() {
+    return walletGuardService as unknown as SqlTag;
+  },
+  leafTables: ["epoch_distribution_leaves", "distribution_settlement_leaves"],
 });
 
 /**

@@ -5,8 +5,8 @@
 ## Purpose
 
 The ONE account-read decision of the capability plane, over the shared grant plane (`@cogni/agent-grants`). Poly has no grant table, grant
-service or grant route of its own: migration 0093 copied every legacy grant forward into `agent_roles` (`resource = 'account'`) and dropped
-`agent_capability_grants` and `agent_access_requests`.
+service or grant route of its own: migration 0093 copied every live or revoked legacy grant forward into `agent_roles` (`resource = 'account'`). The two legacy tables
+stay until the contract migration.
 
 ## Public Surface
 
@@ -17,6 +17,12 @@ service or grant route of its own: migration 0093 copied every legacy grant forw
 - `resolvePrincipalAccountId(tx, principalId)` — the account a principal owns.
 
 ## Invariants
+
+- **`routeOnlyCapabilities` is catalog metadata here, not enforcement.** `app/src/node-extensions.ts` lists Poly's route ids so `account:read` is declared, account-kind and askable
+  (`POST /api/v1/agent/access-requests`). Poly's route wrapper has no `sameDoor` option, so nothing in the package guards these routes. Enforcement is this directory's
+  `authorize()` (through `executeAccountRead`) plus the delegated SELECT policies, both asking `agent_has_scope()`. A new account-read route must call `executeAccountRead`.
+- **Expand phase.** `agent_capability_grants` and `agent_access_requests` are still in the database (migration 0093 copied them and dropped nothing). No code reads or writes them;
+  the contract migration drops them in a later release.
 
 - `account:read` is the only delegable scope. The owner approves it on `/profile` (`/api/v1/agent-access/mine`); an outside agent asks at
   `POST /api/v1/agent/access-requests`. There is no `performance:read` alias and no Poly-only scope. A narrower grant, if ever needed, is a

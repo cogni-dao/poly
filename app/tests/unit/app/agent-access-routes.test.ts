@@ -26,6 +26,7 @@ const io = vi.hoisted(() => ({
 
 vi.mock("@/lib/auth/server", () => ({ getServerSessionUser: () => io.sessionUser() }));
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: () => io.agentUser() }));
+vi.mock("@/app/_lib/approval-origin", () => ({ resolveAgentApprovalOrigin: () => "https://poly.example" }));
 vi.mock("@/bootstrap/container", () => ({
   getContainer: () => ({
     agentAuthority: {
@@ -122,6 +123,12 @@ describe("/api/v1/agent/access-requests (AI plane)", () => {
       headers: { "content-type": "application/json", host: "poly.example", ...headers },
       body: JSON.stringify(body),
     });
+
+  it("builds the owner's link from deployment config, never from a request header", async () => {
+    io.requestAccess.mockResolvedValue({ state: "pending", created: true, approvalPath: "/profile#agent-request=tok" });
+    const res = await askCreate(ask({ authorization: "Bearer cogni_ag_sk_v1_x", host: "evil.example", "x-forwarded-host": "evil.example" }));
+    expect(((await res.json()) as { approvalUrl?: string }).approvalUrl).toBe("https://poly.example/profile#agent-request=tok");
+  });
 
   it("asks for the caller itself and returns the owner's one link", async () => {
     io.requestAccess.mockResolvedValue({ state: "pending", created: true, approvalPath: "/profile#agent-request=tok" });
