@@ -29,7 +29,7 @@ vi.mock("@/shared/config/repoSpec.server", () => ({
 import { GET } from "@/app/.well-known/agent.json/route";
 
 describe("agent access discovery", () => {
-  it("publishes self-list, request, poll, and scoped P/L actions with schemas", async () => {
+  it("publishes self-list, request, and scoped P/L actions with schemas", async () => {
     const response = await GET(
       new Request("http://0.0.0.0:3000/.well-known/agent.json", {
         headers: {
@@ -52,12 +52,8 @@ describe("agent access discovery", () => {
       endpoint: "https://poly.example.test/api/v1/agent/access-requests",
       auth: { type: "bearer" },
     });
-    expect(body.actions.pollAgentAccess).toMatchObject({
-      method: "GET",
-      endpoint:
-        "https://poly.example.test/api/v1/agent/access-requests/{id}",
-      auth: { type: "bearer" },
-    });
+    // An agent polls its own list (the shared plane has no per-request poll route).
+    expect(body.actions).not.toHaveProperty("pollAgentAccess");
     expect(body.actions.readCopyTradePnl).toMatchObject({
       method: "GET",
       endpoint:
@@ -67,7 +63,6 @@ describe("agent access discovery", () => {
     for (const action of [
       body.actions.listOwnAgentAccessRequests,
       body.actions.requestAgentAccess,
-      body.actions.pollAgentAccess,
       body.actions.readCopyTradePnl,
     ]) {
       expect(action).toHaveProperty("inputSchema");

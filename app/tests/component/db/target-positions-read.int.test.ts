@@ -4,7 +4,6 @@
 /** Real-Postgres proof for the bounded, tenant-clamped target-position view. */
 
 import { randomUUID } from "node:crypto";
-import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import { polyPositionGapRuns } from "@cogni/db-schema/position-gap";
 import { toUserId, userActor } from "@cogni/ids";
 import {
@@ -14,6 +13,10 @@ import {
 	polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { PolyAccountTargetPositionsResponseSchema } from "@cogni/poly-node-contracts";
+import {
+	deleteAccountGrants,
+	seedAccountGrant,
+} from "@tests/_fixtures/db/account-grants";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -101,12 +104,11 @@ describe("target positions persisted target/runtime read", () => {
 			{ id: ACCOUNT_EMPTY, ownerUserId: USER_EMPTY, balanceCredits: 0n },
 			{ id: ACCOUNT_MANY, ownerUserId: USER_MANY, balanceCredits: 0n },
 		]);
-		await db.insert(agentCapabilityGrants).values({
-			billingAccountId: ACCOUNT_A,
-			granteePrincipalId: USER_B,
-			scopes: ["account:read"],
+		await seedAccountGrant(db, {
+			principalId: USER_B,
+			accountId: ACCOUNT_A,
+			approvedBy: USER_A,
 			expiresAt: future,
-			createdByUserId: USER_A,
 		});
 		await db.insert(polyCopyTradeTargets).values([
 			{
@@ -423,9 +425,7 @@ describe("target positions persisted target/runtime read", () => {
 					ACCOUNT_MANY,
 				]),
 			);
-		await db
-			.delete(agentCapabilityGrants)
-			.where(eq(agentCapabilityGrants.billingAccountId, ACCOUNT_A));
+		await deleteAccountGrants(db, [ACCOUNT_A]);
 		await db
 			.delete(polyTraderCurrentPositions)
 			.where(

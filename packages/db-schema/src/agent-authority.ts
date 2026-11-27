@@ -11,7 +11,7 @@
  *   - SERVICE_ROLE_ONLY_WRITES: `agent_roles` has ENABLE + FORCE RLS and one narrow select policy (an account row naming the
  *     connection's own user as principal); no write policy. `agent_principals` is readable by every role and writable only by a
  *     BYPASSRLS service connection. FORCE is added by hand in the migration (package SQL tail).
- *   - POLY_LEGACY_GRANTS_UNTOUCHED: `agent_capability_grants` is Poly's own account-grant plane; it stays until the grant-plane retirement PR.
+ *   - ONE_GRANT_PLANE: an account grant is one `agent_roles` row (`resource = 'account'`); Poly's own `agent_capability_grants` plane is gone (migration 0093).
  *   - No `agent_credentials`, `payer_bindings`, orgs or service-auth tables here: those join in a later PR.
  * Side-effects: none (schema definitions only)
  * Links: https://cognidao.org/knowledge/node-capability-grants-standard

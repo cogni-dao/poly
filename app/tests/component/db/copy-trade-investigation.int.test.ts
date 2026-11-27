@@ -8,7 +8,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import {
   polyCopyTradeDecisions,
   polyCopyTradeFills,
@@ -22,6 +21,10 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { toUserId, userActor } from "@cogni/ids";
+import {
+  deleteAccountGrants,
+  seedAccountGrant,
+} from "@tests/_fixtures/db/account-grants";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -87,38 +90,29 @@ describe("copy-trade investigation", () => {
       { id: ownerA.billingAccountId, ownerUserId: ownerA.userId, balanceCredits: 0n },
       { id: ownerB.billingAccountId, ownerUserId: ownerB.userId, balanceCredits: 0n },
     ]);
-    // story.5006 ALIAS PROOF: every grant below is stored under the LEGACY
-    // `performance:read` name while the reads below require the canonical
-    // `account:read`. This whole suite therefore exercises the expand-phase
-    // compatibility path end-to-end — app-side `authorize()` overlap AND the
-    // widened RLS policy bodies from migration 0074. Do not "modernize" these
-    // fixtures: that would delete the regression test for the one live
-    // production grant.
-    await seedDb.insert(agentCapabilityGrants).values([
-      {
-        billingAccountId: ownerA.billingAccountId,
-        granteePrincipalId: delegate.userId,
-        scopes: ["performance:read"],
-        expiresAt: future,
-        createdByUserId: ownerA.userId,
-      },
-      {
-        billingAccountId: ownerA.billingAccountId,
-        granteePrincipalId: wrongScope.userId,
-        scopes: ["research:run"],
-        expiresAt: future,
-        createdByUserId: ownerA.userId,
-      },
-      {
-        billingAccountId: ownerA.billingAccountId,
-        granteePrincipalId: revoked.userId,
-        scopes: ["performance:read"],
-        expiresAt: future,
-        createdByUserId: ownerA.userId,
-        revokedAt: new Date("2026-10-03T00:00:00.000Z"),
-        revokedByUserId: ownerA.userId,
-      },
-    ]);
+    // One shared `account:read` grant per delegate (an `agent_roles` row, migration 0093). The wrong-scope delegate holds a live row for ANOTHER
+    // scope on the same account; the revoked delegate holds a revoked `account:read` row. Both must read nothing.
+    await seedAccountGrant(seedDb, {
+      principalId: delegate.userId,
+      accountId: ownerA.billingAccountId,
+      approvedBy: ownerA.userId,
+      expiresAt: future,
+    });
+    await seedAccountGrant(seedDb, {
+      principalId: wrongScope.userId,
+      accountId: ownerA.billingAccountId,
+      approvedBy: ownerA.userId,
+      scope: "knowledge:contribute",
+      expiresAt: future,
+    });
+    await seedAccountGrant(seedDb, {
+      principalId: revoked.userId,
+      accountId: ownerA.billingAccountId,
+      approvedBy: ownerA.userId,
+      expiresAt: future,
+      grantedAt: new Date("2026-10-01T00:00:00.000Z"),
+      revokedAt: new Date("2026-10-03T00:00:00.000Z"),
+    });
     const [trader] = await seedDb
       .insert(polyTraderWallets)
       .values({ walletAddress: TARGET_WALLET, kind: "copy_target", label: "Quant target" })
@@ -275,9 +269,7 @@ describe("copy-trade investigation", () => {
     await seedDb
       .delete(polyCopyTradeFills)
       .where(inArray(polyCopyTradeFills.billingAccountId, [ownerA.billingAccountId, ownerB.billingAccountId]));
-    await seedDb
-      .delete(agentCapabilityGrants)
-      .where(eq(agentCapabilityGrants.billingAccountId, ownerA.billingAccountId));
+    await deleteAccountGrants(seedDb, [ownerA.billingAccountId]);
     await seedDb
       .delete(polyCopyTradeTargets)
       .where(eq(polyCopyTradeTargets.id, targetRowId));

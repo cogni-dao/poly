@@ -3,7 +3,8 @@
 
 /**
  * Module: `@app/api/v1/agent/register`
- * Purpose: Machine-actor registration endpoint — mints a user row, a billing
+ * Purpose: Machine-actor registration endpoint — mints a user row with its
+ *   external agent_principals row (one transaction), a billing
  *   account, and a 30-day HMAC-signed API key for agents that can reach the
  *   node without a browser session.
  * Scope: Instrumented via wrapRouteHandlerWithLogging so every attempt hits
@@ -17,11 +18,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { users } from "@cogni/db-schema";
 import { registerAgentOperation } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
 import { issueAgentApiKey } from "@/app/_lib/auth/request-identity";
-import { getContainer, resolveServiceDb } from "@/bootstrap/container";
+import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
 export const runtime = "nodejs";
@@ -35,16 +35,12 @@ export const POST = wrapRouteHandlerWithLogging(
     }
     const input = parsed.data;
 
-    const db = resolveServiceDb();
     const id = randomUUID();
 
-    await db.insert(users).values({
-      id,
-      name: input.name,
-      walletAddress: null,
-    });
-
+    // REGISTRATION_WRITES_THE_PRINCIPAL: the user and its external agent_principals row are one transaction, so an AI is never a user with no kind.
     const container = getContainer();
+    await container.agentAuthority.registerAgent({ userId: id, name: input.name });
+
     const billingAccount =
       await container.serviceAccountService.getOrCreateBillingAccountForUser({
         userId: id,

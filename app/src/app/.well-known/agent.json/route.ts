@@ -43,10 +43,9 @@ import {
 	workItemsReleaseOperation,
 } from "@cogni/node-contracts";
 import {
-	polyAgentAccessRequestAgentListOperation,
-	polyAgentAccessRequestCreateOperation,
-	polyAgentAccessRequestPollOperation,
-} from "@cogni/poly-node-contracts";
+	agentAccessRequestCreateOperation,
+	agentAccessRequestListOperation,
+} from "@cogni/agent-grants/http";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 // Imported from the discovery module directly, not the feature barrel: this
@@ -182,34 +181,15 @@ export async function GET(request: Request) {
 				method: "GET",
 				endpoint: `${origin}/api/v1/agent/access-requests`,
 				auth: { type: "bearer" },
-				inputSchema: z.toJSONSchema(
-					polyAgentAccessRequestAgentListOperation.input,
-				),
-				outputSchema: z.toJSONSchema(
-					polyAgentAccessRequestAgentListOperation.output,
-				),
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(agentAccessRequestListOperation.output),
 			},
 			requestAgentAccess: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/agent/access-requests`,
 				auth: { type: "bearer" },
-				inputSchema: z.toJSONSchema(
-					polyAgentAccessRequestCreateOperation.input,
-				),
-				outputSchema: z.toJSONSchema(
-					polyAgentAccessRequestCreateOperation.output,
-				),
-			},
-			pollAgentAccess: {
-				method: "GET",
-				endpoint: `${origin}/api/v1/agent/access-requests/{id}`,
-				auth: { type: "bearer" },
-				inputSchema: z.toJSONSchema(
-					polyAgentAccessRequestPollOperation.input,
-				),
-				outputSchema: z.toJSONSchema(
-					polyAgentAccessRequestPollOperation.output,
-				),
+				inputSchema: z.toJSONSchema(agentAccessRequestCreateOperation.input),
+				outputSchema: z.toJSONSchema(agentAccessRequestCreateOperation.output),
 			},
 			// GENERATED_DISCOVERY: method, path, required scope and both JSON
 			// schemas are projected from the pure account-read descriptors, so an
