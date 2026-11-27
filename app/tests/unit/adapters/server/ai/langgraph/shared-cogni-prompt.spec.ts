@@ -5,10 +5,9 @@
  * Module: `@tests/unit/adapters/server/ai/langgraph/shared-cogni-prompt`
  * Purpose: The prompt the provider hands the shared runner is the node's, not the released template's.
  * Scope: Poly's REAL node catalog and the real released cogni entry; only the shared runner is replaced, to capture its options.
- * Invariants: PROMPT_MATCHES_NODE: the coordinator prompt reaching the runner names no `work-closeout`, no `core__work_item_update`
- *   and no `core__work_item_artifact_record`, and still lists the workflows this node runs.
+ * Invariants: PROMPT_MATCHES_NODE: the coordinator prompt reaching the runner names no `work-closeout`, and lists the published guarded prioritizer writes this node runs.
  * Side-effects: none
- * Links: src/adapters/server/ai/langgraph/inproc.provider.ts (runSharedCogni), packages/langgraph-graphs/src/catalog.ts
+ * Links: src/adapters/server/ai/langgraph/inproc.provider.ts (runSharedGraph), packages/langgraph-graphs/src/catalog.ts
  * @internal
  */
 
@@ -40,7 +39,7 @@ import { POLY_NODE_LANGGRAPH_CATALOG } from "@/bootstrap/ai/node-catalog";
 const actor = "dfa8570f-d487-4239-b40a-2e39ee4513f9";
 
 describe("coordinator prompt handed to the shared runner", () => {
-  it("is this node's rewritten prompt: no work-closeout and no prioritizer write tools", async () => {
+  it("is this node's rewritten prompt: no work-closeout and published guarded prioritizer tools", async () => {
     const provider = new LangGraphInProcProvider(
       {
         executeCompletionUnit: () => ({
@@ -95,7 +94,7 @@ describe("coordinator prompt handed to the shared runner", () => {
     expect(prompt).toContain("Host-owned registered workflows:");
     expect(prompt).toContain("langgraph:work-prioritizer");
     expect(prompt).not.toContain("work-closeout");
-    expect(prompt).not.toContain("core__work_item_update");
-    expect(prompt).not.toContain("core__work_item_artifact_record");
+    expect(prompt).toContain("core__work_item_update");
+    expect(prompt).toContain("core__work_item_artifact_record");
   });
 });
