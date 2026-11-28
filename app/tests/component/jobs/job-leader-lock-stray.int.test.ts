@@ -116,6 +116,8 @@ describe("job leader lock: a failed connect leaves no backend (bug.5066)", () =>
 			const session = await createJobLeaderLockSession({
 				connectionString,
 				applicationName,
+				// Private key: files run in parallel workers; never contend for the real one.
+				lockKeyText: `poly:job-runner:test-stray-${process.pid}`,
 			});
 			cleanups.push(() => session.dispose());
 			expect(await session.tryAcquire()).toBe(true);

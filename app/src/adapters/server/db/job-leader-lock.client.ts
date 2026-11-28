@@ -49,7 +49,12 @@
  *     USERSET per-session value (no role/server change; database-expert axiom 3),
  *     independent of NAT/kernel keepalive behaviour, and also catches a holder that
  *     is alive at TCP level but frozen. A server without the setting (PG < 14)
- *     refuses the connection loudly at connect, so election never runs unbounded.
+ *     refuses the connection loudly at connect (SQLSTATE 42704, logged at error
+ *     level by the elector), so election never runs unbounded.
+ *     The other half is the elector's: a holder CUT OFF from the database (a
+ *     partition, not a crash) never hears that the server freed its lock, so the
+ *     elector bounds every probe (FENCE_BEFORE_TAKEOVER) and demotes before the idle
+ *     timeout lets a standby acquire. idle timeout alone would give two leaders.
  * Side-effects: IO (one database connection per created session)
  * Links: work/items/task.5016, src/bootstrap/jobs/job-leader-elector.ts,
  *   packages/db-client/src/build-client.ts (pool backend math)
@@ -82,6 +87,12 @@ export interface JobLeaderLockSessionOptions {
 	 * heartbeat intervals, or a healthy session is ended between probes.
 	 */
 	idleSessionTimeoutMs?: number;
+	/**
+	 * Advisory-lock key text (`hashtext(...)`). Default `JOB_LEADER_LOCK_KEY_TEXT`.
+	 * Tests pass a private key so component files running in parallel workers do
+	 * not contend for the one production lock.
+	 */
+	lockKeyText?: string;
 }
 
 /**
@@ -101,6 +112,7 @@ export async function createJobLeaderLockSession(
 	let broken = false;
 
 	const applicationName = options.applicationName ?? DEFAULT_APPLICATION_NAME;
+	const lockKeyText = options.lockKeyText ?? JOB_LEADER_LOCK_KEY_TEXT;
 	const sql = postgres(options.connectionString, {
 		max: 1,
 		// This connection is intentionally long-lived.
@@ -152,7 +164,7 @@ export async function createJobLeaderLockSession(
 			}
 			try {
 				const rows =
-					await sql`SELECT pg_try_advisory_lock(hashtext(${JOB_LEADER_LOCK_KEY_TEXT})) AS acquired`;
+					await sql`SELECT pg_try_advisory_lock(hashtext(${lockKeyText})) AS acquired`;
 				return rows[0]?.acquired === true;
 			} catch (err) {
 				broken = true;

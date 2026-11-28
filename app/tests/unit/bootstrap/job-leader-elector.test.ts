@@ -21,6 +21,9 @@
  *     session.
  *   - CONNECT_FAILURE_IS_RETRIED: createSession rejection never throws out
  *     of the timer loop; the elector keeps retrying.
+ *   - FENCE_BEFORE_TAKEOVER: a probe that never answers (partitioned holder)
+ *     demotes the leader within heartbeat + probe timeout, before the server's
+ *     idle timeout can free the lock for a standby (bug.5066).
  *   - STOP_IS_TERMINAL: stop() stops jobs (iff leader), disposes the
  *     session, and no further probes fire.
  * Side-effects: none (fake timers)
@@ -30,8 +33,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS,
+	DEFAULT_LEADER_PROBE_TIMEOUT_MS,
+	DEFAULT_LEADER_RETRY_INTERVAL_MS,
 	type ElectorLogger,
 	type JobLeaderElectorHandle,
+	LEADER_SESSION_IDLE_TIMEOUT_MS,
 	type LeaderLockSession,
 	startJobLeaderElector,
 } from "@/bootstrap/jobs/job-leader-elector";
@@ -347,5 +354,85 @@ describe("job-leader-elector state machine", () => {
 		await advance(HEARTBEAT_MS);
 		expect(h.isLeader()).toBe(true);
 		expect(stopJobs).not.toHaveBeenCalled();
+	});
+	it("fences a partitioned leader: a probe that never answers stops jobs before the server idle timeout", async () => {
+		const events: string[] = [];
+		const startJobs = vi.fn(() => events.push("start"));
+		const stopJobs = vi.fn(() => events.push("stop"));
+		// Answers once (acquire), then the network is cut: every later probe hangs.
+		const session: FakeSession = {
+			...makeSession([true]),
+			tryAcquire: vi
+				.fn<() => Promise<boolean>>()
+				.mockResolvedValueOnce(true)
+				.mockImplementation(() => new Promise<boolean>(() => {})),
+			dispose: async () => {
+				events.push("dispose");
+			},
+		};
+		const logger = makeLogger();
+		const { handle: h } = start({
+			sessions: [session],
+			startJobs,
+			stopJobs,
+			logger,
+		});
+		await flushMicrotasks();
+		expect(h.isLeader()).toBe(true);
+
+		// The next heartbeat fires at HEARTBEAT_MS and hangs; the fence trips
+		// PROBE_TIMEOUT later — strictly inside the server's idle timeout.
+		await advance(HEARTBEAT_MS + DEFAULT_LEADER_PROBE_TIMEOUT_MS - 1);
+		expect(h.isLeader()).toBe(true);
+		await advance(1);
+		expect(h.isLeader()).toBe(false);
+		expect(stopJobs).toHaveBeenCalledTimes(1);
+		// Jobs stop BEFORE the session is torn down (LOSS_STOPS_JOBS).
+		expect(events).toEqual(["start", "stop", "dispose"]);
+		expect(logger.events).toContainEqual({
+			level: "warn",
+			event: "jobs.leader_lost",
+		});
+	});
+
+	it("keeps the fence strictly inside the server idle timeout", () => {
+		// FENCE_BEFORE_TAKEOVER: holder demote bound < earliest server takeover.
+		expect(
+			DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS + DEFAULT_LEADER_PROBE_TIMEOUT_MS,
+		).toBeLessThan(LEADER_SESSION_IDLE_TIMEOUT_MS);
+		// A healthy session talks at least every retry / heartbeat interval; the
+		// idle timeout must exceed both or the server ends live sessions.
+		expect(LEADER_SESSION_IDLE_TIMEOUT_MS).toBeGreaterThan(
+			DEFAULT_LEADER_RETRY_INTERVAL_MS,
+		);
+		expect(LEADER_SESSION_IDLE_TIMEOUT_MS).toBeGreaterThanOrEqual(
+			3 * DEFAULT_LEADER_RETRY_INTERVAL_MS,
+		);
+	});
+
+	it("logs an error-level event when the server rejects idle_session_timeout (42704)", async () => {
+		const logger = makeLogger();
+		handle = startJobLeaderElector({
+			createSession: async () => {
+				throw Object.assign(
+					new Error('unrecognized configuration parameter "idle_session_timeout"'),
+					{ code: "42704" },
+				);
+			},
+			startJobs: vi.fn(),
+			stopJobs: vi.fn(),
+			logger,
+			instanceId: "test#1",
+			retryIntervalMs: RETRY_MS,
+			heartbeatIntervalMs: HEARTBEAT_MS,
+		});
+		await flushMicrotasks();
+		expect(logger.events).toContainEqual({
+			level: "error",
+			event: "jobs.leader_lock_unsupported_server",
+		});
+		expect(
+			logger.events.filter((e) => e.event === "jobs.leader_lock_connect_failed"),
+		).toHaveLength(0);
 	});
 });
