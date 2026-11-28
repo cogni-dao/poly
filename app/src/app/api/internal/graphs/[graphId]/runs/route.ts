@@ -33,23 +33,22 @@ import {
 import { AnalyticsEvents, capture } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+  persistAssistantThenPublishTerminal,
+  TerminalPublicationError,
+} from "@/app/_lib/ai/durable-chat-terminal";
+import { verifyChatActor } from "@/bootstrap/chat-actor-proof";
 import { getContainer } from "@/bootstrap/container";
 import {
   createGraphExecutor,
   createScopedGraphExecutor,
 } from "@/bootstrap/graph-executor.factory";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import {
-  executeStream,
-} from "@/features/ai/public.server";
+import { executeStream } from "@/features/ai/public.server";
 import { commitUsageFact } from "@/features/ai/services/billing";
 import { preflightCreditCheck } from "@/features/ai/services/preflight-credit-check";
 import type { PreflightCreditCheckFn } from "@/ports";
 import { isInsufficientCreditsPortError } from "@/ports";
-import {
-  persistAssistantThenPublishTerminal,
-  TerminalPublicationError,
-} from "@/app/_lib/ai/durable-chat-terminal";
 import {
   isGrantExpiredError,
   isGrantNotFoundError,
@@ -160,7 +159,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       log.error("SCHEDULER_API_TOKEN not configured");
       return NextResponse.json(
         { error: "Service not configured" },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -182,19 +181,19 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     if (!rawGraphId || !rawGraphId.includes(":")) {
       log.warn(
         { graphId: rawGraphId },
-        "Missing or invalid graphId in path (expected providerId:graphName)"
+        "Missing or invalid graphId in path (expected providerId:graphName)",
       );
       return NextResponse.json({ error: "Graph not found" }, { status: 404 });
     }
     const graphId = rawGraphId as `${string}:${string}`;
 
     // --- 3. Idempotency-Key header (required) ---
-    const idempotencyKey = request.headers.get("idempotency-key");
-    if (!idempotencyKey) {
+    const transportKey = request.headers.get("idempotency-key");
+    if (!transportKey) {
       log.warn("Missing Idempotency-Key header");
       return NextResponse.json(
         { error: "Idempotency-Key header required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -213,7 +212,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       log.warn({ errors: parseResult.error.issues }, "Invalid request body");
       return NextResponse.json(
         { error: "Invalid request body", details: parseResult.error.issues },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -223,12 +222,28 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       runId: providedRunId,
     } = parseResult.data;
     let runId = providedRunId ?? randomUUID();
+    const sharedChat = graphId === "langgraph:cogni" && !executionGrantId;
+    const claimKey = input.executionClaimKey;
+    if (
+      sharedChat &&
+      (!providedRunId ||
+        transportKey !== `api:${providedRunId}` ||
+        typeof claimKey !== "string" ||
+        !/^ai:[a-f0-9]{64}$/.test(claimKey))
+    ) {
+      return NextResponse.json(
+        { error: "Untrusted shared graph identity" },
+        { status: 403 },
+      );
+    }
+    const idempotencyKey = sharedChat ? (claimKey as string) : transportKey;
 
     // --- 5. Compute request hash for idempotency ---
     // API completions preclaim the slot before Temporal start and pass the
     // authenticated hash through the workflow. Scheduled runs hash the exact
     // bytes delivered by Temporal so retries cannot drift by JSON key order.
     const suppliedRequestHash =
+      !executionGrantId &&
       typeof input.executionRequestHash === "string" &&
       /^[0-9a-f]{64}$/.test(input.executionRequestHash)
         ? input.executionRequestHash
@@ -236,11 +251,82 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     const requestHash =
       suppliedRequestHash ?? computeRequestHash(graphId, rawBody);
 
+    // Authenticate the exact launcher-created claim before any cache or claim path.
+    if (sharedChat) {
+      const actor = input.actorUserId;
+      const account = input.billingAccountId;
+      const key = input.virtualKeyId;
+      if (
+        executionGrantId ||
+        !providedRunId ||
+        !suppliedRequestHash ||
+        typeof actor !== "string" ||
+        typeof account !== "string" ||
+        typeof key !== "string" ||
+        !verifyChatActor(
+          {
+            nodeId: container.nodeId,
+            lane: serverEnv().DEPLOY_ENVIRONMENT ?? "",
+            idempotencyKey,
+            transportKey,
+            requestHash,
+            runId,
+            graphId,
+            actorUserId: actor,
+            billingAccountId: account,
+            virtualKeyId: key,
+            payload: {
+              messages: input.messages,
+              modelRef: input.modelRef,
+              stateKey: input.stateKey ?? null,
+            },
+          },
+          serverEnv().AUTH_SECRET,
+          input.chatActorProof,
+        )
+      )
+        return NextResponse.json(
+          { error: "Untrusted shared graph identity" },
+          { status: 403 },
+        );
+    }
+
+    // A scheduled Cogni grant must remain live even for a cached delivery.
+    let verifiedCogniGrant:
+      | Awaited<
+          ReturnType<
+            typeof container.executionGrantWorkerPort.validateGrantForGraph
+          >
+        >
+      | undefined;
+    if (graphId === "langgraph:cogni" && executionGrantId) {
+      try {
+        verifiedCogniGrant =
+          await container.executionGrantWorkerPort.validateGrantForGraph(
+            SYSTEM_ACTOR,
+            executionGrantId,
+            graphId,
+          );
+      } catch (error) {
+        if (
+          isGrantNotFoundError(error) ||
+          isGrantExpiredError(error) ||
+          isGrantRevokedError(error) ||
+          isGrantScopeMismatchError(error)
+        )
+          return NextResponse.json(
+            { error: "Execution grant unavailable" },
+            { status: 403 },
+          );
+        throw error;
+      }
+    }
+
     // --- 6. Check idempotency ---
     const idempotencyResult =
       await container.executionRequestPort.checkIdempotency(
         idempotencyKey,
-        requestHash
+        requestHash,
       );
 
     if (idempotencyResult.status === "cached") {
@@ -254,11 +340,11 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         cached.runId,
         cached.ok ? "success" : "error",
         cached.ok ? undefined : "Graph execution failed",
-        cached.ok ? undefined : (cached.errorCode ?? "internal")
+        cached.ok ? undefined : (cached.errorCode ?? "internal"),
       );
       log.info(
         { idempotencyKey, runId: cached.runId, ok: cached.ok },
-        "Returning cached result"
+        "Returning cached result",
       );
       // Use explicit branching for discriminated union type narrowing
       if (cached.ok) {
@@ -279,6 +365,18 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       }
     }
 
+    if (
+      sharedChat &&
+      (idempotencyResult.status === "new" ||
+        ((idempotencyResult.status === "pending" ||
+          idempotencyResult.status === "stale") &&
+          idempotencyResult.request.runId !== runId))
+    ) {
+      return NextResponse.json(
+        { error: "Shared graph claim unavailable" },
+        { status: 403 },
+      );
+    }
     let requestAlreadyClaimed = false;
     if (idempotencyResult.status === "pending") {
       // Execution in progress - return 409 Conflict to signal retry later
@@ -286,11 +384,11 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       if (suppliedRequestHash && pending.runId === runId) {
         // The completion facade durably claimed this exact request before
         // starting Temporal. This workflow owns the pending record.
-        requestAlreadyClaimed = true;
+        requestAlreadyClaimed = !sharedChat;
       } else {
         log.info(
           { idempotencyKey, runId: pending.runId },
-          "Execution already in progress"
+          "Execution already in progress",
         );
         return NextResponse.json(
           {
@@ -299,7 +397,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
               "Request with this Idempotency-Key is currently being processed",
             runId: pending.runId,
           },
-          { status: 409 }
+          { status: 409 },
         );
       }
     }
@@ -318,7 +416,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
           existingHash: idempotencyResult.existingHash,
           providedHash: idempotencyResult.providedHash,
         },
-        "Idempotency key conflict"
+        "Idempotency key conflict",
       );
       return NextResponse.json(
         {
@@ -326,7 +424,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
           message:
             "Request with same Idempotency-Key but different payload already processed",
         },
-        { status: 422 }
+        { status: 422 },
       );
     }
 
@@ -345,17 +443,19 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         >
       >;
       try {
-        grant = await container.executionGrantWorkerPort.validateGrantForGraph(
-          SYSTEM_ACTOR,
-          executionGrantId,
-          graphId
-        );
+        grant =
+          verifiedCogniGrant ??
+          (await container.executionGrantWorkerPort.validateGrantForGraph(
+            SYSTEM_ACTOR,
+            executionGrantId,
+            graphId,
+          ));
       } catch (error) {
         if (isGrantNotFoundError(error)) {
           log.warn({ executionGrantId }, "Grant not found");
           return NextResponse.json(
             { error: "Grant not found" },
-            { status: 403 }
+            { status: 403 },
           );
         }
         if (isGrantExpiredError(error)) {
@@ -370,7 +470,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
           log.warn({ executionGrantId, graphId }, "Grant scope mismatch");
           return NextResponse.json(
             { error: "Grant scope mismatch" },
-            { status: 403 }
+            { status: 403 },
           );
         }
         throw error;
@@ -378,16 +478,16 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
       const billingAccount =
         await container.serviceAccountService.getBillingAccountById(
-          grant.billingAccountId
+          grant.billingAccountId,
         );
       if (!billingAccount) {
         log.error(
           { billingAccountId: grant.billingAccountId },
-          "Billing account not found"
+          "Billing account not found",
         );
         return NextResponse.json(
           { error: "Billing account not found" },
-          { status: 500 }
+          { status: 500 },
         );
       }
 
@@ -417,7 +517,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
             error:
               "API-originated run requires actorUserId, billingAccountId, and virtualKeyId in payload",
           },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
@@ -450,7 +550,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
     log.info(
       { graphId, runId, executionGrantId, idempotencyKey, traceId },
-      "Starting scheduled graph execution"
+      "Starting scheduled graph execution",
     );
 
     // --- 9b. Patch stateKey onto graph_runs record (bug.0197) ---
@@ -462,12 +562,12 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         await container.graphRunRepository.patchRunStateKey(
           SYSTEM_ACTOR,
           runId,
-          stateKey
+          stateKey,
         );
       } catch (patchErr) {
         log.warn(
           { runId, stateKey, err: patchErr },
-          "Failed to patch stateKey on graph_runs — non-fatal"
+          "Failed to patch stateKey on graph_runs — non-fatal",
         );
       }
     }
@@ -522,7 +622,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     if (!modelRef) {
       return NextResponse.json(
         { error: "modelRef field is required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -532,7 +632,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         modelId: modelRef.modelId,
         connectionId: modelRef.connectionId ?? null,
       },
-      "Parsed modelRef for graph execution"
+      "Parsed modelRef for graph execution",
     );
 
     // Claim only after permanent request validation. INSERT races are resolved
@@ -542,7 +642,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       // Adopt it by starting the same lease heartbeat used by scheduled runs.
       await container.executionRequestPort.heartbeatRequest(
         idempotencyKey,
-        new Date(Date.now() + EXECUTION_LEASE_MS).toISOString()
+        new Date(Date.now() + EXECUTION_LEASE_MS).toISOString(),
       );
     } else {
       const claimResult =
@@ -551,7 +651,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
           requestHash,
           runId,
           traceId,
-          new Date(Date.now() + EXECUTION_LEASE_MS).toISOString()
+          new Date(Date.now() + EXECUTION_LEASE_MS).toISOString(),
         );
       if (claimResult.status !== "claimed") {
         if (claimResult.status === "cached") {
@@ -561,7 +661,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
             cached.runId,
             cached.ok ? "success" : "error",
             cached.ok ? undefined : "Graph execution failed",
-            cached.ok ? undefined : (cached.errorCode ?? "internal")
+            cached.ok ? undefined : (cached.errorCode ?? "internal"),
           );
           return NextResponse.json(
             cached.ok
@@ -572,24 +672,24 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
                   traceId: cached.traceId,
                   error: cached.errorCode ?? "internal",
                 },
-            { status: 200 }
+            { status: 200 },
           );
         }
         if (claimResult.status === "mismatch") {
           return NextResponse.json(
             { error: "Idempotency conflict" },
-            { status: 422 }
+            { status: 422 },
           );
         }
         if (claimResult.status === "new") {
           return NextResponse.json(
             { error: "Execution claim changed; retry request" },
-            { status: 503 }
+            { status: 503 },
           );
         }
         return NextResponse.json(
           { error: "Execution in progress", runId: claimResult.request.runId },
-          { status: 409 }
+          { status: 409 },
         );
       }
       runId = claimResult.request.runId;
@@ -603,7 +703,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     const preflightCheckFn: PreflightCreditCheckFn = (
       billingAccountId,
       m,
-      msgs
+      msgs,
     ) =>
       preflightCreditCheck({
         billingAccountId,
@@ -626,7 +726,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
             ingressRequestId: fact.runId,
           },
           accountService,
-          log as import("pino").Logger
+          log as import("pino").Logger,
         );
       },
       billing: {
@@ -668,17 +768,22 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         actorUserId,
         requestId: runId,
         ...(sessionId ? { sessionId } : {}),
-      }
+        // Set only after `verifyChatActor` accepted this run's launcher proof above; never from the payload. The shell needs it.
+        ...(sharedChat ? { runClaimVerified: true as const } : {}),
+        // A grant-backed run is a validated schedule tick (the grant was checked above): no caller waits on it, so the
+        // provider words its stop as a tick's and ends a run with no usable write tool before any model call.
+        ...(executionGrantId ? { unattended: true as const } : {}),
+      },
     );
 
     const heartbeat = setInterval(() => {
       void container.executionRequestPort
         .heartbeatRequest(
           idempotencyKey,
-          new Date(Date.now() + EXECUTION_LEASE_MS).toISOString()
+          new Date(Date.now() + EXECUTION_LEASE_MS).toISOString(),
         )
         .catch((err) =>
-          log.warn({ runId, err }, "Execution lease heartbeat failed")
+          log.warn({ runId, err }, "Execution lease heartbeat failed"),
         );
     }, EXECUTION_HEARTBEAT_MS);
     heartbeat.unref();
@@ -722,7 +827,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         } catch (publishErr) {
           log.warn(
             { runId, eventType: event.type, err: publishErr },
-            "Redis stream publish failed — stream degraded, execution continues"
+            "Redis stream publish failed — stream degraded, execution continues",
           );
         }
       }
@@ -752,7 +857,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
             onPersisted: ({ messageCount, attempt }) => {
               aiChatPhaseDurationMs.observe(
                 { phase: "assistant_persist" },
-                performance.now() - assistantPersistStartMs
+                performance.now() - assistantPersistStartMs,
               );
               log.info(
                 {
@@ -764,20 +869,17 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
                   messageCount,
                   attempt,
                 },
-                "ai.chat_assistant_persisted"
+                "ai.chat_assistant_persisted",
               );
             },
             publishTerminal: async () => {
               await runStream.publish(runId, enriched);
               try {
-                await runStream.expire(
-                  runId,
-                  RUN_STREAM_DEFAULT_TTL_SECONDS
-                );
+                await runStream.expire(runId, RUN_STREAM_DEFAULT_TTL_SECONDS);
               } catch (expireErr) {
                 log.warn(
                   { runId, err: expireErr },
-                  "Redis expiry after terminal publication failed"
+                  "Redis expiry after terminal publication failed",
                 );
               }
               log.info(
@@ -788,7 +890,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
                   runId,
                   workflowId: chatWorkflowId,
                 },
-                "ai.chat_terminal_published"
+                "ai.chat_terminal_published",
               );
             },
           });
@@ -799,7 +901,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
             aiChatPersistenceFailuresTotal.inc();
             aiChatPhaseDurationMs.observe(
               { phase: "assistant_persist" },
-              performance.now() - assistantPersistStartMs
+              performance.now() - assistantPersistStartMs,
             );
           }
           log.error(
@@ -812,7 +914,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
                   : "assistant_persist",
               err: terminalError,
             },
-            "Durable chat terminal failed — suppressing run success"
+            "Durable chat terminal failed — suppressing run success",
           );
           throw terminalError;
         }
@@ -824,7 +926,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
       log.warn(
         { runId, graphId, errorCode, err: error },
-        "Graph execution failed before durable terminal publication"
+        "Graph execution failed before durable terminal publication",
       );
 
       // Publish error to Redis so facade subscribers don't hang.
@@ -837,7 +939,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       } catch (publishErr) {
         log.warn(
           { runId, err: publishErr },
-          "Redis error publish failed after graph execution failure"
+          "Redis error publish failed after graph execution failure",
         );
       }
 
@@ -867,7 +969,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
           runId,
           "error",
           "Graph execution failed",
-          errorCode
+          errorCode,
         );
       } finally {
         clearInterval(heartbeat);
@@ -893,7 +995,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         runId,
         final.ok ? "success" : "error",
         final.ok ? undefined : "Graph execution failed",
-        final.ok ? undefined : (final.error ?? "internal")
+        final.ok ? undefined : (final.error ?? "internal"),
       );
     } finally {
       clearInterval(heartbeat);
@@ -928,7 +1030,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     } else {
       log.warn(
         { runId, graphId, error: final.error },
-        "Scheduled graph execution failed"
+        "Scheduled graph execution failed",
       );
       capture({
         event: AnalyticsEvents.AGENT_RUN_FAILED,
@@ -952,7 +1054,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       };
       return NextResponse.json(errorResponse, { status: 200 });
     }
-  }
+  },
 );
 
 // ---------------------------------------------------------------------------
@@ -967,7 +1069,7 @@ const RESPONSE_FORMAT_SCHEMAS: Record<string, z.ZodType> = {
         metric: z.string(),
         value: z.number().min(0).max(1),
         observations: z.array(z.string()),
-      })
+      }),
     ),
     summary: z.string(),
   }),
@@ -980,7 +1082,7 @@ const RESPONSE_FORMAT_SCHEMAS: Record<string, z.ZodType> = {
  * 2. schema: pass-through (for in-process callers that can provide Zod directly)
  */
 function resolveResponseFormat(
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
 ): { prompt?: string; schema: unknown } | undefined {
   if (
     input.responseFormat == null ||

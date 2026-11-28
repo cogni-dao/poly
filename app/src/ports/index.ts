@@ -224,3 +224,9 @@ export type {
 	TreasurySettlementOutcome,
 	TreasurySettlementPort,
 } from "./treasury-settlement.port";
+export type {
+	AdminSession,
+	AiPermissionChange,
+	AiPermissionTarget,
+	NodeAdminPort,
+} from "./node-admin.port";

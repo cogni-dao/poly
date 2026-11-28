@@ -76,7 +76,7 @@ describe("completion facade contract", () => {
         messages: [{ role: "user", content: "test" }],
         modelRef: { providerKey: "platform", modelId: TEST_MODEL_ID },
         sessionUser: TEST_SESSION_USER_1,
-        graphName: "langgraph:poet",
+        graphName: "langgraph:cogni",
       },
       testCtx
     );
@@ -129,7 +129,7 @@ describe("completion facade contract", () => {
         messages: [{ role: "user", content: "test" }],
         modelRef: { providerKey: "platform", modelId: TEST_MODEL_ID },
         sessionUser: TEST_SESSION_USER_1,
-        graphName: "langgraph:poet",
+        graphName: "langgraph:cogni",
       },
       testCtx
     );

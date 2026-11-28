@@ -14,41 +14,51 @@
  * @public
  */
 
-// Re-export catalog (single source of truth for graph definitions)
+// Re-export graph ids (the node's one composed catalog is built in the app with `createNodeCatalog`)
 export {
   DEFAULT_LANGGRAPH_GRAPH_ID,
-  LANGGRAPH_CATALOG,
   LANGGRAPH_GRAPH_IDS,
   LANGGRAPH_PROVIDER_ID,
-  type LangGraphCatalogKeys,
   type LangGraphGraphId,
 } from "./catalog";
-
-// Re-export graph constants and factories
-export {
-  AUTORESEARCH_REGISTRY_SWARM_GRAPH_NAME,
-  AUTORESEARCH_SINGLE_LANE_GRAPH_NAME,
-  AUTORESEARCH_SYNTROPY_LOOP_GRAPH_NAME,
-  BRAIN_GRAPH_NAME,
-  POET_GRAPH_NAME,
-} from "./graphs/index";
-
-// Re-export inproc runner (all LangChain logic contained in package)
-export { createInProcGraphRunner } from "./inproc/runner";
-
-// Re-export inproc types for provider to use
+// The in-process provider, runner, catalog composer and their ports are the published package's: one import path for the node, no copy.
 export type {
+  CatalogEntry,
+  LangGraphCatalog,
+} from "@cogni/shared-langgraph-graphs";
+export { LANGGRAPH_CATALOG as SHARED_LANGGRAPH_CATALOG } from "@cogni/shared-langgraph-graphs";
+export type {
+  AgentAuthorityPort,
+  CodingCallerPolicy,
   CompletionFn,
   CompletionResult,
+  CompletionUnitFinal,
+  CompletionUnitParams,
+  CompletionUnitPort,
   CreateGraphFn,
   GraphResult,
   InProcGraphRequest,
+  InProcProviderDeps,
   InProcRunnerOptions,
   Message,
+  NodeCatalogChanges,
+  Persistence,
+  ProviderLogger,
+  RunScope,
+  RunScopePort,
+  SourceContext,
   ToolExecFn,
   ToolExecResult,
-} from "./inproc/types";
-
+} from "@cogni/shared-langgraph-graphs/inproc";
+export {
+  createInProcGraphRunner,
+  createLangGraphInProcProvider,
+  createNodeCatalog,
+  INPROC_EVENTS,
+  LANGGRAPH_INPROC_PROVIDER_ID,
+  requiresInProcess,
+  resolveNodeSourceContext,
+} from "@cogni/shared-langgraph-graphs/inproc";
 // Re-export runtime types (interfaces only, not implementations)
 export type { MakeLangChainToolOptions } from "./runtime/index";
 export type { McpServerConfig, McpServersConfig } from "./runtime/mcp/index";

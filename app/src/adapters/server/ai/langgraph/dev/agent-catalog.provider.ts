@@ -4,7 +4,7 @@
 /**
  * Module: `@adapters/server/ai/langgraph/dev/agent-catalog.provider`
  * Purpose: Discovery-only provider for LangGraph dev catalog.
- * Scope: Implements AgentCatalogProvider for listing agents. Uses static LANGGRAPH_CATALOG in MVP. Does NOT call server for discovery.
+ * Scope: Implements AgentCatalogProvider for listing agents. Uses this node's one composed catalog, injected. Does NOT call server for discovery.
  * Invariants:
  *   - STABLE_GRAPH_IDS: providerId = "langgraph" (same as InProc)
  *   - DISCOVERY_NO_EXECUTION_DEPS: No execution infrastructure required
@@ -16,7 +16,6 @@
  * @internal
  */
 
-import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
 
 import type { AgentDescriptor } from "@/ports";
 
@@ -33,7 +32,7 @@ export const LANGGRAPH_PROVIDER_ID = "langgraph" as const;
  *
  * Per STABLE_GRAPH_IDS: providerId = "langgraph" (same as InProc).
  * Per DISCOVERY_NO_EXECUTION_DEPS: does not require execution infrastructure.
- * Per CATALOG_MANUAL_SYNC_P0: reads from static LANGGRAPH_CATALOG.
+ * Per CATALOG_MANUAL_SYNC_P0: reads from the injected node catalog.
  *
  * MVP: Same implementation as LangGraphInProcAgentCatalogProvider.
  * P1: Will call /assistants/search for dynamic discovery from dev server.
@@ -42,7 +41,11 @@ export class LangGraphDevAgentCatalogProvider implements AgentCatalogProvider {
   readonly providerId = LANGGRAPH_PROVIDER_ID;
   private readonly agentDescriptors: readonly AgentDescriptor[];
 
-  constructor() {
+  constructor(
+    private readonly catalog: Readonly<
+      Record<string, { displayName: string; description: string }>
+    >
+  ) {
     // Build descriptors from catalog at construction time
     this.agentDescriptors = this.buildDescriptors();
   }
@@ -53,7 +56,7 @@ export class LangGraphDevAgentCatalogProvider implements AgentCatalogProvider {
    * Per LANGGRAPH_SERVER_ALIGNED: uses 'name' field (not displayName).
    */
   private buildDescriptors(): readonly AgentDescriptor[] {
-    return Object.entries(LANGGRAPH_CATALOG).map(([graphName, entry]) => {
+    return Object.entries(this.catalog).map(([graphName, entry]) => {
       const graphId = `${this.providerId}:${graphName}`;
       return {
         agentId: graphId, // P0: agentId === graphId

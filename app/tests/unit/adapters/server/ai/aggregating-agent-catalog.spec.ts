@@ -21,8 +21,8 @@ describe("AggregatingAgentCatalog", () => {
   describe("listAgents", () => {
     it("aggregates agents from all providers", () => {
       const provider1 = createMockAgentCatalogProvider("langgraph", [
-        "poet",
-        "research",
+        "cogni",
+        "work-prioritizer",
       ]);
       const provider2 = createMockAgentCatalogProvider("claude_sdk", [
         "planner",
@@ -33,8 +33,8 @@ describe("AggregatingAgentCatalog", () => {
 
       expect(agents).toHaveLength(3);
       expect(agents.map((a) => a.agentId)).toEqual([
-        "langgraph:poet",
-        "langgraph:research",
+        "langgraph:cogni",
+        "langgraph:work-prioritizer",
         "claude_sdk:planner",
       ]);
     });
@@ -48,25 +48,25 @@ describe("AggregatingAgentCatalog", () => {
     });
 
     it("includes both agentId and graphId in descriptors (P0: equal)", () => {
-      const provider = createMockAgentCatalogProvider("langgraph", ["poet"]);
+      const provider = createMockAgentCatalogProvider("langgraph", ["cogni"]);
       const catalog = new AggregatingAgentCatalog([provider]);
 
       const agents = catalog.listAgents();
 
       expect(agents).toHaveLength(1);
-      expect(agents[0].agentId).toBe("langgraph:poet");
-      expect(agents[0].graphId).toBe("langgraph:poet");
+      expect(agents[0].agentId).toBe("langgraph:cogni");
+      expect(agents[0].graphId).toBe("langgraph:cogni");
       expect(agents[0].agentId).toBe(agents[0].graphId); // P0 invariant
     });
 
     it("includes name and description in agent descriptors (LANGGRAPH_SERVER_ALIGNED)", () => {
-      const provider = createMockAgentCatalogProvider("langgraph", ["poet"]);
+      const provider = createMockAgentCatalogProvider("langgraph", ["cogni"]);
       const catalog = new AggregatingAgentCatalog([provider]);
 
       const agents = catalog.listAgents();
 
-      expect(agents[0].name).toBe("Poet");
-      expect(agents[0].description).toBe("Test poet agent");
+      expect(agents[0].name).toBe("Cogni");
+      expect(agents[0].description).toBe("Test cogni agent");
     });
   });
 });

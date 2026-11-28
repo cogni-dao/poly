@@ -26,7 +26,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   createPolyResearchGraph,
-  POLY_LANGGRAPH_CATALOG,
   POLY_RESEARCH_GRAPH_NAME,
   POLY_RESEARCH_TOOL_IDS,
 } from "../src/index";
@@ -54,21 +53,6 @@ describe("poly-research graph — tool bundle (POLY_RESEARCH_TOOL_IDS)", () => {
   it("has no duplicate tool IDs", () => {
     const ids = POLY_RESEARCH_TOOL_IDS as readonly string[];
     expect(new Set(ids).size).toBe(ids.length);
-  });
-});
-
-describe("poly-research graph — catalog registration", () => {
-  it("is registered as a peer graph (not a subgraph of poly-brain)", () => {
-    expect(POLY_LANGGRAPH_CATALOG[POLY_RESEARCH_GRAPH_NAME]).toBeDefined();
-    expect(POLY_RESEARCH_GRAPH_NAME).toBe("poly-research");
-    // Peer, not nested: poly-brain entry is also present and distinct.
-    expect(Object.keys(POLY_LANGGRAPH_CATALOG)).toContain("poly-brain");
-    expect(Object.keys(POLY_LANGGRAPH_CATALOG)).toContain("poly-research");
-  });
-
-  it("catalog entry uses POLY_RESEARCH_TOOL_IDS", () => {
-    const entry = POLY_LANGGRAPH_CATALOG[POLY_RESEARCH_GRAPH_NAME];
-    expect(entry?.toolIds).toEqual(POLY_RESEARCH_TOOL_IDS);
   });
 });
 

@@ -16,9 +16,10 @@ import "@testing-library/jest-dom/vitest";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Agent, type Dispatcher, setGlobalDispatcher } from "undici";
-import { afterEach, beforeAll, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, vi } from "vitest";
 
 import { initOtelSdk } from "@/instrumentation";
+import { resetProcessSingletons } from "@/shared/util/process-singleton";
 
 const DEFAULT_COGNI_REPO_PATH = existsSync(
   resolve(process.cwd(), ".cogni", "repo-spec.yaml")
@@ -130,6 +131,12 @@ beforeAll(async () => {
 
   // Set the global dispatcher for all fetch requests
   setGlobalDispatcher(dispatcher);
+});
+
+// Process-wide singletons (container, DB pools) live on globalThis, which
+// `vi.resetModules()` does not reset — forget them so each test builds its own.
+beforeEach(() => {
+  resetProcessSingletons();
 });
 
 afterEach(() => {

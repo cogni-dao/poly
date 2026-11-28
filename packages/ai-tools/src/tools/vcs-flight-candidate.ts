@@ -91,6 +91,13 @@ export const vcsFlightCandidateContract: ToolContract<
     "core__vcs_get_ci_status to observe the resulting `candidate-flight` check " +
     "on the PR head.",
   effect: "state_change",
+  requires: {
+    scope: "vcs:flight_candidate",
+    kind: "node",
+    subject: "admin",
+    label: "Start test deployments",
+    description: "Put a code change on the test site.",
+  },
   inputSchema: VcsFlightCandidateInputSchema,
   outputSchema: VcsFlightCandidateOutputSchema,
   redact: (output: VcsFlightCandidateOutput): VcsFlightCandidateRedacted =>

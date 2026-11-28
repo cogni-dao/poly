@@ -27,8 +27,12 @@ import type { BillingContext, LlmService } from "@/ports";
  */
 export interface ExecutionScope {
   readonly billing: BillingContext;
+  /** The run this scope serves. A tool that needs per-run state (the sandbox folder) reads it here. */
+  readonly runId?: string;
   /** Actor who initiated this run. Used by tools that need user-scoped operations (e.g., schedule CRUD). */
   readonly actorUserId?: string;
+  readonly principalId?: string;
+  readonly subjectUserId?: string;
   /** Chat-only temporary tech debt — browser disconnect, not durable cancellation. */
   readonly abortSignal?: AbortSignal;
   /** Resolved LlmService for this run (from ModelProviderPort.createLlmService). */
@@ -46,7 +50,7 @@ export function getExecutionScope(): ExecutionScope {
   const scope = executionScopeStorage.getStore();
   if (!scope) {
     throw new Error(
-      "getExecutionScope() called outside runInScope — billing context not available"
+      "getExecutionScope() called outside runInScope — billing context not available",
     );
   }
   return scope;

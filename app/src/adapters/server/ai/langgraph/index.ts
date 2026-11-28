@@ -4,7 +4,7 @@
 /**
  * Module: `@adapters/server/ai/langgraph`
  * Purpose: Barrel export for LangGraph adapter components.
- * Scope: Re-exports provider, catalog types. Isolates LangGraph concerns. Does NOT export @langchain/* types.
+ * Scope: Re-exports the provider adapter and the dev providers. Isolates LangGraph concerns. Does NOT export @langchain/* types.
  * Invariants:
  *   - NO_LANGCHAIN_IN_ADAPTERS_ROOT: LangChain imports only in this directory
  * Side-effects: none
@@ -12,8 +12,6 @@
  * @public
  */
 
-// Catalog types (generic, no inproc imports)
-export type { LangGraphCatalog, LangGraphCatalogEntry } from "./catalog";
 export type {
   LangGraphDevClientConfig,
   LangGraphDevProviderConfig,
@@ -29,6 +27,9 @@ export {
   type CompletionUnitAdapter,
   LANGGRAPH_PROVIDER_ID,
   LangGraphInProcProvider,
+  packageToolBundle,
+  type PolyProviderWiring,
+  type RunTools,
 } from "./inproc.provider";
 // Discovery-only provider (no execution deps)
 export {

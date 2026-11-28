@@ -88,6 +88,13 @@ export interface ToolContract<
   readonly redact: (output: TOutput) => TRedacted;
   /** Allowlisted fields that appear in redacted output */
   readonly allowlist: ReadonlyArray<keyof TOutput>;
+  /**
+   * The lock this tool needs beyond the graph's tool list (agent-grants guard).
+   * CI (the contract test) fails a non-`read_only` contract without it.
+   */
+  readonly requires?: NonNullable<
+    SharedToolContract<TName, TInput, TOutput, TRedacted>["requires"]
+  >;
 }
 
 /**

@@ -21,7 +21,7 @@ describe("ai.chat.v1 contract validation", () => {
       const payload = {
         message: "Hello",
         modelRef: { providerKey: "platform", modelId: "gpt-4" },
-        graphName: "langgraph:poet",
+        graphName: "langgraph:cogni",
       };
 
       const result = AssistantUiInputSchema.safeParse(payload);

@@ -20,7 +20,6 @@ export type {
   ToolExecOptions,
   ToolRunner,
 } from "@cogni/ai-core";
-export { createToolRunner } from "@cogni/ai-core";
 // Activity validation (for app facade)
 export { validateActivityRange } from "./services/activity";
 // Shared assistant message assembler (AiEvent[] → UIMessage)

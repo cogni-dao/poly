@@ -21,6 +21,7 @@ import type { Database } from "@cogni/db-client";
 import { createServiceReadDbClient } from "@cogni/db-client/service";
 
 import { serverEnv } from "@/shared/env";
+import { processSingleton } from "@/shared/util/process-singleton";
 
 import {
   logServicePoolConfigured,
@@ -29,15 +30,14 @@ import {
 } from "./drizzle.service-client";
 
 // Lazy service-role READ connection (BYPASSRLS) for dashboard/research read routes.
-let _serviceReadDb: Database | null = null;
-
+// ONE_PER_PROCESS (bug.5066): held in the process registry, not a module variable.
 function createServiceReadDb(): Database {
-  if (!_serviceReadDb) {
+  return processSingleton("db.service-read", () => {
     const env = serverEnv();
     // Pool budget: declared DB_READ_POOL_MAX when injected, else default 1 (bug.5064).
     // Backend math: packages/db-client/src/build-client.ts.
     const budget = resolveServiceRoleBudgetFromEnv();
-    _serviceReadDb = createServiceReadDbClient(env.DATABASE_SERVICE_URL, {
+    const db = createServiceReadDbClient(env.DATABASE_SERVICE_URL, {
       max: budget.readMax,
     });
     logServicePoolConfigured(
@@ -45,8 +45,8 @@ function createServiceReadDb(): Database {
       env.DB_READ_POOL_MAX ?? SHARED_TIER_READ_POOL_MAX,
       budget
     );
-  }
-  return _serviceReadDb;
+    return db;
+  });
 }
 
 export const getServiceReadDb = createServiceReadDb;

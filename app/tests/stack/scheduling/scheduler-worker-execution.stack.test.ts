@@ -90,7 +90,7 @@ describe("[scheduling] scheduler-worker execution", () => {
   it("creates graph_runs and execution_requests when triggered", async () => {
     // 1. Create schedule via CRUD API
     const payload = createSchedulePayload({
-      graphId: "langgraph:poet",
+      graphId: "langgraph:cogni",
       cron: "0 0 1 1 *", // Far future (Jan 1 at midnight) - won't auto-fire
     });
 

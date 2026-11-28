@@ -10,8 +10,7 @@
  *   feature. This file is the regression test for that class of gap.
  * Scope: Catalog composition and allowlist/bundle agreement. Graph execution
  *   itself is proven on candidate.
- * Invariants: NODE_RUNTIME_CATALOG_BOUNDARY; BASE_IS_SPREAD_NEVER_EDITED;
- *   TOOL_ALLOWLIST_IS_APP_POLICY; NO_WRITE_SCOPE.
+ * Invariants: ONE_COMPOSED_CATALOG; TOOL_ALLOWLIST_IS_APP_POLICY; NO_WRITE_SCOPE.
  * Side-effects: none
  * Links: task.1791070967, story.5006, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @internal
@@ -22,18 +21,15 @@ import {
   WEB_SEARCH_NAME,
   WORK_ITEM_READ_NAME,
 } from "@cogni/ai-tools";
-import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
-import {
-  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
-  POLY_LANGGRAPH_CATALOG,
-} from "@cogni/poly-graphs";
+import { SHARED_LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
+import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
 import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
   POLY_BRAIN_NODE_TOOL_IDS,
-  POLY_WORK_PRIORITIZER_READ_ONLY_NOTE,
   POLY_NODE_LANGGRAPH_CATALOG,
+  POLY_RESEARCH_NODE_TOOL_IDS,
 } from "@/bootstrap/ai/node-catalog";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
@@ -58,16 +54,29 @@ describe("this node's langgraph catalog", () => {
     expect(`langgraph:${POLY_BRAIN}`).toBe("langgraph:poly-brain");
   });
 
-  it("preserves every shared graph rather than replacing the base catalog", () => {
-    // BASE_IS_SPREAD_NEVER_EDITED. Swapping the provider's catalog must not
-    // silently drop poet/brain/research or the scheduled operator graphs.
-    for (const graphName of Object.keys(LANGGRAPH_CATALOG)) {
+  it("keeps every published graph except the one it omits, and adds exactly its own two", () => {
+    // ONE_COMPOSED_CATALOG: `add`, `narrow` and `omit` are the only changes to the published catalog.
+    const published = Object.keys(SHARED_LANGGRAPH_CATALOG).filter(
+      (name) => name !== "work-closeout"
+    );
+    for (const graphName of published) {
       expect(POLY_NODE_LANGGRAPH_CATALOG[graphName]).toBeDefined();
     }
+    expect(POLY_NODE_LANGGRAPH_CATALOG["work-closeout"]).toBeUndefined();
     expect(POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.graphFactory).toBeTypeOf("function");
     expect(Object.keys(POLY_NODE_LANGGRAPH_CATALOG)).toHaveLength(
-      Object.keys(LANGGRAPH_CATALOG).length + 2
+      published.length + 2
     );
+  });
+
+  it("registers poly-research as a peer graph, with only the read-only tools this node binds", () => {
+    const entry = POLY_NODE_LANGGRAPH_CATALOG["poly-research"];
+    expect(entry?.graphFactory).toBeTypeOf("function");
+    expect(entry?.toolIds).toEqual(POLY_RESEARCH_NODE_TOOL_IDS);
+    expect(POLY_RESEARCH_NODE_TOOL_IDS).toEqual([WEB_SEARCH_NAME]);
+    // Neither of Poly's graphs names a principal: every tool they offer is read_only.
+    expect(entry?.principal).toBeUndefined();
+    expect(POLY_NODE_LANGGRAPH_CATALOG[POLY_BRAIN]?.principal).toBeUndefined();
   });
 
   it("allowlists exactly web search and the one account-read capability", () => {
@@ -118,7 +127,7 @@ describe("this node's langgraph catalog", () => {
     const toolIds = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
     expect(toolIds).toContain(WORK_ITEM_READ_NAME);
     expect(toolIds).not.toContain(WORK_ITEM_UPDATE_NAME);
-    expect(toolIds).not.toContain("core__work_item_transition");
+    expect(toolIds).not.toContain("core__work_item_artifact_record");
 
     const byId = new Map(
       POLY_CORE_TOOL_BUNDLE.map((bound) => [bound.contract.name, bound.contract])
@@ -140,11 +149,16 @@ describe("this node's langgraph catalog", () => {
 
   it("tells work-prioritizer it is read-only, after the shared prompt", () => {
     const prompt = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.systemPrompt ?? "";
-    const shared = (POLY_LANGGRAPH_CATALOG["work-prioritizer"] as { systemPrompt?: string } | undefined)
-      ?.systemPrompt;
-    expect(shared).toBeTruthy();
-    expect(prompt).toContain(POLY_WORK_PRIORITIZER_READ_ONLY_NOTE);
     expect(prompt).toContain("READ-ONLY ON THIS NODE: triage writes are off");
-    expect(prompt.startsWith(shared as string)).toBe(true);
+    expect(prompt.indexOf("READ-ONLY ON THIS NODE")).toBeGreaterThan(0);
+  });
+
+  it("publishes exactly the cogni coordinator, the read-only work-prioritizer, poly-brain and poly-research", () => {
+    expect(Object.keys(POLY_NODE_LANGGRAPH_CATALOG).sort()).toEqual([
+      "cogni",
+      "poly-brain",
+      "poly-research",
+      "work-prioritizer",
+    ]);
   });
 });

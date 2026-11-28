@@ -350,7 +350,7 @@ describe("translateDevServerStream", () => {
     const events = await collectEvents(
       translateDevServerStream(mockStream(chunks), {
         ...mockContext(),
-        graphId: "langgraph:poet",
+        graphId: "langgraph:cogni",
       })
     );
 
@@ -362,7 +362,7 @@ describe("translateDevServerStream", () => {
         attempt: 1,
         source: "litellm",
         executorType: "langgraph_server",
-        graphId: "langgraph:poet",
+        graphId: "langgraph:cogni",
       },
     });
   });

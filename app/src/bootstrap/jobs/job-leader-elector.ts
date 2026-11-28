@@ -65,6 +65,19 @@ export const DEFAULT_LEADER_RETRY_INTERVAL_MS = 20_000;
 export const DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 10_000;
 
 /**
+ * How long the SERVER lets a leader-lock session sit idle before it ends it
+ * (`idle_session_timeout`, bug.5066). Every live session talks at least once per
+ * retry interval (standby) or heartbeat interval (leader), so three retry intervals
+ * of silence means the holder is dead or frozen: the server ends the session and
+ * Postgres releases its advisory lock. Without it, a holder whose TCP session dies
+ * silently (an Akash lease closed, a pod killed behind NAT) keeps the lock until
+ * Postgres' kernel-default keepalive notices — tcp_keepalives_idle 7200s + 9 x 75s
+ * = ~2h11m — and no pod runs the background jobs meanwhile.
+ */
+export const LEADER_SESSION_IDLE_TIMEOUT_MS =
+	3 * DEFAULT_LEADER_RETRY_INTERVAL_MS;
+
+/**
  * One pinned Postgres session holding (or trying for) the advisory lock.
  * Implementations MUST pin a single backend session — the lock is
  * session-scoped, so a pooled client that transparently swaps connections
@@ -81,6 +94,26 @@ export interface LeaderLockSession {
 	 * MUST swallow its own errors (a dead connection is the common case).
 	 */
 	dispose(): Promise<void>;
+	/**
+	 * Backend counts as the DATABASE reports them (pg_stat_activity), read on
+	 * this session's own connection (bug.5066). Never throws; `undefined` when
+	 * unavailable. Optional so unit-test fakes stay flat.
+	 */
+	backendStats?(): Promise<LeaderBackendStats | undefined>;
+}
+
+/**
+ * Real Postgres backends, from pg_stat_activity. Compare `pod` with the
+ * pod's budget (service pool + read pool + this leader connection): a
+ * number above it is a leak, whatever the client-side bookkeeping says.
+ */
+export interface LeaderBackendStats {
+	/** Client backends of this session's role, all pods. Compare with the role CONNECTION LIMIT. */
+	role: number;
+	/** Of those, backends from this session's client address (this pod, or the NAT address it shares). */
+	pod: number;
+	/** Of those, backends carrying the leader-lock application_name — expected 1 per pod. */
+	leader: number;
 }
 
 /** Minimal structural logger (pino-compatible) so unit tests fake it flat. */
@@ -133,6 +166,16 @@ export function startJobLeaderElector(
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let ticking = false;
 	let standbyLogged = false;
+
+	/** Real-backend snapshot (bug.5066) for log lines; never throws. */
+	async function stats(): Promise<Record<string, unknown>> {
+		try {
+			const backends = await session?.backendStats?.();
+			return backends ? { backends } : {};
+		} catch {
+			return {};
+		}
+	}
 
 	function schedule(ms: number): void {
 		if (stopped) return;
@@ -228,6 +271,12 @@ export function startJobLeaderElector(
 				return;
 			}
 
+			// Real-backend gauge for the two edge logs below. Read BEFORE the state
+			// flips (and before the `stopped` re-check) so the await cannot race a
+			// stop() into starting jobs on a stopped elector.
+			const backendStats =
+				!leader && (acquired || !standbyLogged) ? await stats() : {};
+
 			if (stopped) {
 				// stop() raced our probe; stop() handles job/session teardown.
 				return;
@@ -238,7 +287,7 @@ export function startJobLeaderElector(
 					leader = true;
 					standbyLogged = false;
 					deps.logger.info(
-						{ event: "jobs.leader_acquired", ...baseLog },
+						{ event: "jobs.leader_acquired", ...baseLog, ...backendStats },
 						"job-runner leadership acquired — starting all background jobs",
 					);
 					try {
@@ -267,6 +316,7 @@ export function startJobLeaderElector(
 						{
 							event: "jobs.leader_standby",
 							...baseLog,
+							...backendStats,
 							retry_interval_ms: retryMs,
 						},
 						"another pod holds the job-runner lock — standing by",

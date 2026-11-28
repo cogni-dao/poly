@@ -27,15 +27,15 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.12.0/cogni-dao-ai-tools-0.12.0.tgz",
+    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.16.0/cogni-dao-ai-tools-0.16.0.tgz",
     "@cogni/langgraph-graphs": "workspace:*",
     "@cogni/poly-ai-tools": "workspace:*",
     "@cogni/node-contracts": "workspace:*",
     "@cogni/poly-node-contracts": "workspace:*",
     "@langchain/langgraph": "1.4.10",
     "zod": "^3.24.0",
-    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.9.0/cogni-dao-langgraph-graphs-0.9.0.tgz",
-    "@cogni/agent-grants": "https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.2.0/cogni-dao-agent-grants-0.2.0.tgz",
+    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz",
+    "@cogni/agent-grants": "https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.10.0/cogni-dao-agent-grants-0.10.0.tgz",
     "@cogni/ai-core": "workspace:*",
     "@cogni/local-ai-tools": "workspace:@cogni/ai-tools@*",
     "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz",

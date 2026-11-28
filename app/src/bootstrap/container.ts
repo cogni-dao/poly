@@ -141,6 +141,7 @@ import {
 	getTestOperatorWallet,
 } from "@/adapters/test";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import { createSandboxShellCapability } from "@/bootstrap/capabilities/sandbox-workspace";
 import {
 	startGovernanceSyncOnBoot,
 	startMetricsSyncOnBoot,
@@ -157,6 +158,14 @@ import {
 } from "@/bootstrap/capabilities/metrics";
 import { createRepoCapability } from "@/bootstrap/capabilities/repo";
 import { createScheduleCapability } from "@/bootstrap/capabilities/schedule";
+import {
+	type AgentAuthoritySql,
+	type AgentToolAuthority,
+	createAgentToolAuthority,
+} from "@/bootstrap/agent-authority";
+import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
+import { createNodeAdminPort } from "@/bootstrap/node-admin-port";
+import type { NodeAdminPort } from "@/ports";
 import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
 import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
@@ -237,6 +246,10 @@ import {
 import { serverEnv } from "@/shared/env/server-env";
 import { makeLogger } from "@/shared/observability";
 import { EVENT_NAMES } from "@/shared/observability/events";
+import {
+	clearProcessSingleton,
+	processSingleton,
+} from "@/shared/util/process-singleton";
 import { USDC_TOKEN_ADDRESS } from "@/shared/web3";
 import type { EvmOnchainClient } from "@/shared/web3/onchain/evm-onchain-client.interface";
 
@@ -341,6 +354,11 @@ export interface Container {
 	providerResolver: ModelProviderResolverPort;
 	/** Service-role DB for explicitly cross-tenant/system Poly read models. */
 	serviceDb: Database;
+	/** The shared schedule capability (the published schedule tools bind to it with the run's model). */
+	sharedScheduleCapability: import("@cogni/ai-tools").ScheduleCapability;
+	/** AI-access composition only: the permission catalog derived from the tool contracts, role rows and the guard store. */
+	agentAuthority: AgentToolAuthority;
+	nodeAdminPort: NodeAdminPort;
 	/** Poly copy-trade/order ledger. Cross-tenant root surface; tenant calls use forTenant(ctx). */
 	orderLedger: OrderLedger;
 	getBoundedPaperExecutor: ReturnType<typeof createPolyTradeExecutorFactory>["getBoundedPaperExecutor"];
@@ -402,8 +420,9 @@ function createUnavailableWorkItemCommand(): WorkItemCommandPort {
 	) as WorkItemCommandPort;
 }
 
-// Module-level singleton
-let _container: Container | null = null;
+// Process-wide singleton (bug.5066): the instance lives in the `globalThis`
+// registry (see shared/util/process-singleton.ts), not in a module variable.
+const CONTAINER_KEY = "bootstrap.container";
 let _temporalConnection: TemporalConnection | null = null;
 let _workflowClient: WorkflowClient | null = null;
 let _workflowClientPromise: Promise<{
@@ -556,12 +575,14 @@ function stopAllJobHandles(): void {
  * Lazily initializes on first access.
  */
 export function getContainer(): Container {
-	if (!_container) {
-		_container = createContainer();
-		startGovernanceSyncOnBoot(_container.log);
-		if (_container.goalMetrics) startMetricsSyncOnBoot(_container.log);
-	}
-	return _container;
+	// ONE_PER_PROCESS (bug.5066): the container owns the job elector and the DB
+	// pools, so it must exist once per process, not once per Next bundle graph.
+	return processSingleton(CONTAINER_KEY, () => {
+		const container = createContainer();
+		startGovernanceSyncOnBoot(container.log);
+		if (container.goalMetrics) startMetricsSyncOnBoot(container.log);
+		return container;
+	});
 }
 
 /**
@@ -569,7 +590,7 @@ export function getContainer(): Container {
  * For tests only - allows fresh container between test runs.
  */
 export function resetContainer(): void {
-	_container = null;
+	clearProcessSingleton(CONTAINER_KEY);
 	_webhookRegistrations = null;
 	// task.5016 — retire the elector first (releases the advisory lock,
 	// fire-and-forget: tests re-create containers; nothing blocks here), then
@@ -2634,6 +2655,7 @@ function createContainer(): Container {
 		scheduleCapability,
 		vcsCapability: stubVcsCapability,
 		workItemCapability,
+		sandboxShellCapability: createSandboxShellCapability(env),
 	});
 	const goalProgress = createGoalProgressReader({
 		metrics: () => goalMetrics,
@@ -2649,6 +2671,16 @@ function createContainer(): Container {
 		...toolBindings,
 		...metricTools.bindings,
 	});
+
+	// One authority: its permission catalog derives from the tool contracts (DECLARED_ONCE_SHOWN_EVERYWHERE).
+	const agentAuthority = createAgentToolAuthority({
+		// Service role: agent_roles / agent_principals are deny-all for the app role.
+		sql: serviceDb.$client as unknown as AgentAuthoritySql,
+		nodeAdmin: createApproversNodeAdminAuthority(),
+		log,
+		toolBundle: [...POLY_CORE_TOOL_BUNDLE],
+	});
+	const nodeAdminPort = createNodeAdminPort(agentAuthority);
 
 	// Config: rethrow in dev/test for diagnosis, respond_500 in production for safety
 	const config: ContainerConfig = {
@@ -2829,6 +2861,9 @@ function createContainer(): Container {
 			: undefined,
 		connectionBroker,
 		serviceDb,
+		sharedScheduleCapability: scheduleCapability,
+		agentAuthority,
+		nodeAdminPort,
 		orderLedger,
 		getBoundedPaperExecutor: polyTradeExecutorFactory.getBoundedPaperExecutor,
 		copyTradeTargetSource,

@@ -28,6 +28,7 @@ import type { ChatCompletionOutput, ChatMessage } from "@cogni/node-contracts";
 import type { SessionUser } from "@cogni/node-shared";
 import { EVENT_NAMES } from "@cogni/node-shared";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
+import { signChatActor } from "@/bootstrap/chat-actor-proof";
 import {
   getContainer,
   getTemporalWorkflowClient,
@@ -126,7 +127,9 @@ export interface CompletionInput {
 
 export class CompletionIdempotencyConflictError extends Error {
   constructor() {
-    super("Idempotency key was already used for a different completion request");
+    super(
+      "Idempotency key was already used for a different completion request",
+    );
     this.name = "CompletionIdempotencyConflictError";
   }
 }
@@ -150,7 +153,7 @@ export function scopeExecutionIdempotencyKey(
   nodeId: string,
   billingAccountId: string,
   actorUserId: string,
-  callerKey: string
+  callerKey: string,
 ): string {
   const digest = createHash("sha256")
     .update(`${nodeId}:${billingAccountId}:${actorUserId}:${callerKey}`, "utf8")
@@ -164,18 +167,21 @@ function canonicalize(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, nested]) => [key, canonicalize(nested)])
+        .map(([key, nested]) => [key, canonicalize(nested)]),
     );
   }
   return value;
 }
 
-export function completionRequestHash(input: {
-  graphId: string;
-  messages: MessageDto[];
-  modelRef: import("@cogni/ai-core").ModelRef;
-  stateKey?: string;
-}, key: string): string {
+export function completionRequestHash(
+  input: {
+    graphId: string;
+    messages: MessageDto[];
+    modelRef: import("@cogni/ai-core").ModelRef;
+    stateKey?: string;
+  },
+  key: string,
+): string {
   return createHmac("sha256", key)
     .update("completion-request:v1\0", "utf8")
     .update(
@@ -185,9 +191,9 @@ export function completionRequestHash(input: {
           messages: input.messages,
           modelRef: input.modelRef,
           stateKey: input.stateKey ?? null,
-        })
+        }),
       ),
-      "utf8"
+      "utf8",
     )
     .digest("hex");
 }
@@ -200,7 +206,7 @@ export function completionRequestHash(input: {
  * Map internal finish reason to OpenAI-compatible finish_reason.
  */
 export function toOpenAiFinishReason(
-  reason: string
+  reason: string,
 ): "stop" | "length" | "tool_calls" | "content_filter" {
   switch (reason) {
     case "stop":
@@ -239,7 +245,7 @@ export interface ChatCompletionInput {
  */
 export async function chatCompletion(
   input: ChatCompletionInput,
-  ctx: RequestContext
+  ctx: RequestContext,
 ): Promise<ChatCompletionOutput> {
   const messageDtos = chatMessagesToDtos(input.messages);
   const graphName = input.graphName ?? DEFAULT_GRAPH_NAME;
@@ -254,7 +260,7 @@ export async function chatCompletion(
       ...(input.stateKey ? { stateKey: input.stateKey } : {}),
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
     },
-    ctx
+    ctx,
   );
 
   // Collect text deltas server-side
@@ -351,7 +357,7 @@ export interface ChatCompletionStreamInput {
  */
 export async function chatCompletionStream(
   input: ChatCompletionStreamInput,
-  ctx: RequestContext
+  ctx: RequestContext,
 ): Promise<{
   stream: AsyncIterable<AiEvent>;
   final: Promise<StreamFinalResult>;
@@ -369,7 +375,7 @@ export async function chatCompletionStream(
       ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     },
-    ctx
+    ctx,
   );
 }
 
@@ -384,7 +390,7 @@ export async function chatCompletionStream(
  */
 export async function completionStream(
   input: CompletionInput & { abortSignal?: AbortSignal },
-  ctx: RequestContext
+  ctx: RequestContext,
 ): Promise<{
   stream: AsyncIterable<AiEvent>;
   final: Promise<StreamFinalResult>;
@@ -402,11 +408,11 @@ export async function completionStream(
       ...(input.sessionUser.walletAddress
         ? { walletAddress: input.sessionUser.walletAddress }
         : {}),
-    }
+    },
   );
   aiChatPhaseDurationMs.observe(
     { phase: "billing_resolve" },
-    performance.now() - billingStartMs
+    performance.now() - billingStartMs,
   );
 
   const graphId = input.graphName.includes(":")
@@ -418,7 +424,7 @@ export async function completionStream(
     nodeId,
     billingAccount.id,
     input.sessionUser.id,
-    callerIdempotencyKey
+    callerIdempotencyKey,
   );
   const workflowId = `graph-run:${idempotencyKey}`;
   const runId =
@@ -430,7 +436,7 @@ export async function completionStream(
       modelRef: input.modelRef,
       ...(input.stateKey ? { stateKey: input.stateKey } : {}),
     },
-    serverEnv().AUTH_SECRET
+    serverEnv().AUTH_SECRET,
   );
 
   // Claim the global execution_requests slot before Temporal starts. Recheck
@@ -438,7 +444,7 @@ export async function completionStream(
   const executionRequests = getContainer().executionRequestPort;
   let idempotency = await executionRequests.checkIdempotency(
     idempotencyKey,
-    requestHash
+    requestHash,
   );
   if (idempotency.status === "new") {
     let createError: unknown;
@@ -447,18 +453,19 @@ export async function completionStream(
         idempotencyKey,
         requestHash,
         runId,
-        ctx.traceId
+        ctx.traceId,
       );
     } catch (error) {
       createError = error;
     }
     idempotency = await executionRequests.checkIdempotency(
       idempotencyKey,
-      requestHash
+      requestHash,
     );
     if (idempotency.status === "new") {
       throw (
-        createError ?? new Error("Execution idempotency claim was not persisted")
+        createError ??
+        new Error("Execution idempotency claim was not persisted")
       );
     }
   }
@@ -492,6 +499,33 @@ export async function completionStream(
             chatMessageId: input.messageId,
             chatWorkflowId: workflowId,
             executionRequestHash: requestHash,
+            ...(graphId === "langgraph:cogni"
+              ? { executionClaimKey: idempotencyKey }
+              : {}),
+            ...(graphId === "langgraph:cogni"
+              ? {
+                  chatActorProof: signChatActor(
+                    {
+                      nodeId,
+                      lane: serverEnv().DEPLOY_ENVIRONMENT ?? "",
+                      idempotencyKey,
+                      transportKey: `api:${runId}`,
+                      requestHash,
+                      runId,
+                      graphId,
+                      actorUserId: input.sessionUser.id,
+                      billingAccountId: billingAccount.id,
+                      virtualKeyId: billingAccount.defaultVirtualKeyId,
+                      payload: {
+                        messages: input.messages,
+                        modelRef: input.modelRef,
+                        stateKey: input.stateKey ?? null,
+                      },
+                    },
+                    serverEnv().AUTH_SECRET,
+                  ),
+                }
+              : {}),
           },
           runKind: "user_immediate" as const,
           triggerSource: "api",
@@ -508,7 +542,7 @@ export async function completionStream(
   }
   aiChatPhaseDurationMs.observe(
     { phase: "temporal_start" },
-    performance.now() - temporalStartMs
+    performance.now() - temporalStartMs,
   );
 
   const runStream = getContainer().runStream;
@@ -521,10 +555,7 @@ export async function completionStream(
       once: true,
     });
   }
-  const rawSubscription = runStream.subscribe(
-    runId,
-    subscriptionAbort.signal
-  );
+  const rawSubscription = runStream.subscribe(runId, subscriptionAbort.signal);
   const iterator = rawSubscription[Symbol.asyncIterator]();
   const acceptedAtMs = performance.now();
 
@@ -543,12 +574,12 @@ export async function completionStream(
     if (first.done) {
       subscriptionAbort.abort();
       throw new AiExecutionError(
-        input.abortSignal?.aborted ? "aborted" : "internal"
+        input.abortSignal?.aborted ? "aborted" : "internal",
       );
     }
     aiChatPhaseDurationMs.observe(
       { phase: "accepted_to_first_event" },
-      performance.now() - acceptedAtMs
+      performance.now() - acceptedAtMs,
     );
     if (first.value.event.type === "error") {
       subscriptionAbort.abort();
@@ -607,7 +638,7 @@ export async function completionStream(
           runId,
           errorCode,
         },
-        EVENT_NAMES.AI_RELAY_PUMP_ERROR
+        EVENT_NAMES.AI_RELAY_PUMP_ERROR,
       );
       resolveFinal?.({ ok: false, requestId: runId, error: "internal" });
     }
@@ -626,7 +657,7 @@ export async function completionStream(
           const timeout = new Promise<"timeout">((resolve) => {
             deadline = setTimeout(
               () => resolve("timeout"),
-              FIRST_EVENT_DEADLINE_MS
+              FIRST_EVENT_DEADLINE_MS,
             );
           });
           const first = await Promise.race([iterator.next(), timeout]);
@@ -646,7 +677,7 @@ export async function completionStream(
           sawFirstEvent = true;
           aiChatPhaseDurationMs.observe(
             { phase: "accepted_to_first_event" },
-            performance.now() - acceptedAtMs
+            performance.now() - acceptedAtMs,
           );
         } else {
           next = await iterator.next();

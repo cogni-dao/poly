@@ -18,7 +18,6 @@ export const tsupConfig = defineConfig({
     "src/index.ts",
     "src/runtime/index.ts",
     "src/graphs/index.ts",
-    "src/inproc/index.ts",
   ],
   format: ["esm"],
   dts: false, // tsc -b emits per-file declarations; tsup handles JS only

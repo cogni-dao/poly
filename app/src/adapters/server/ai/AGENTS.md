@@ -74,7 +74,7 @@ pnpm test tests/component/ai/
 - Discovery/Execution split: AgentCatalogProvider for discovery (no execution deps), GraphExecutorPort for execution
 - AgentCatalogProvider pattern: listAgents() returns AgentDescriptor[]; AggregatingAgentCatalog fans out to providers
 - GraphExecutorPort pattern: providerId prefixes graphId (e.g., "langgraph:poet"); NamespaceGraphRouter routes to registered providers
-- langgraph/ subdirectory: LangGraphInProcAgentCatalogProvider (discovery) and LangGraphInProcProvider (execution) wire @cogni/langgraph-graphs catalog. InProcProvider passes `responseFormat` through to graph factory and `structuredOutput` back to `GraphFinal`.
+- langgraph/ subdirectory: LangGraphInProcAgentCatalogProvider (discovery) and LangGraphInProcProvider (execution) read Poly's one composed catalog (`bootstrap/ai/node-catalog.ts`). LangGraphInProcProvider is a thin adapter over the published `@cogni-dao/langgraph-graphs/inproc` provider (guard, audience, denial and runner live in the package; `tests/meta/inproc-provider-no-local-guard.test.ts` fails on local copies). InProcProvider passes `responseFormat` through to graph factory and `structuredOutput` back to `GraphFinal`.
 - TavilyWebSearchAdapter: HARD_CAPS_ENFORCED_AT_TOOL_BOUNDARY — maxResults capped at 5, title≤120, snippet≤160 chars regardless of caller requests
 
 ## Dependencies

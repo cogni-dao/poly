@@ -299,13 +299,13 @@ export async function GET(request: Request) {
 		},
 		defaults: {
 			model: "gpt-4o-mini",
-			graph_name: "poet",
+			graph_name: "cogni",
 		},
 		usage: {
 			note: "completions requires graph_name for newly registered agents",
 			example: {
 				model: "gpt-4o-mini",
-				graph_name: "poet",
+				graph_name: "cogni",
 				messages: [{ role: "user", content: "Hello" }],
 			},
 		},

@@ -61,12 +61,34 @@ const APP_DB_SERVICE_USER = `service_${NODE}`;
 const APP_DB_SERVICE_PASSWORD = "service_pass";
 
 export async function setup() {
+  // A caller may supply an explicitly isolated native Postgres cluster for the
+  // authority migration test (story.0090; same hunk as red#88). It owns its own
+  // roles and databases, so the container, provision.sh and the shared-database
+  // preflights are skipped. Never a default or shared port.
+  const nativeUrl = process.env.TEST_POSTGRES_ADMIN_URL;
+  if (nativeUrl) {
+    const url = new URL(nativeUrl);
+    if (
+      !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+      !url.port ||
+      url.port === "5432"
+    ) {
+      throw new Error(
+        "Native component Postgres must use an explicit nondefault loopback port"
+      );
+    }
+    Object.assign(process.env, CORE_TEST_ENV, { APP_ENV: "test" });
+    return;
+  }
   // Start Postgres with provision.sh copied into the container
   const c = await new PostgreSqlContainer("postgres:15-alpine")
     .withCopyFilesToContainer([
       { source: PROVISION_SH, target: "/tmp/provision.sh" },
     ])
     .start();
+
+  // The authority migration test creates its own isolated roles and databases from this admin URL.
+  process.env.TEST_POSTGRES_ADMIN_URL = c.getConnectionUri();
 
   const superuser = c.getUsername();
   const superpass = c.getPassword();
