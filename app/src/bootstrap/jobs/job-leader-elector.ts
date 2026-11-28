@@ -65,6 +65,19 @@ export const DEFAULT_LEADER_RETRY_INTERVAL_MS = 20_000;
 export const DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 10_000;
 
 /**
+ * How long the SERVER lets a leader-lock session sit idle before it ends it
+ * (`idle_session_timeout`, bug.5066). Every live session talks at least once per
+ * retry interval (standby) or heartbeat interval (leader), so three retry intervals
+ * of silence means the holder is dead or frozen: the server ends the session and
+ * Postgres releases its advisory lock. Without it, a holder whose TCP session dies
+ * silently (an Akash lease closed, a pod killed behind NAT) keeps the lock until
+ * Postgres' kernel-default keepalive notices — tcp_keepalives_idle 7200s + 9 x 75s
+ * = ~2h11m — and no pod runs the background jobs meanwhile.
+ */
+export const LEADER_SESSION_IDLE_TIMEOUT_MS =
+	3 * DEFAULT_LEADER_RETRY_INTERVAL_MS;
+
+/**
  * One pinned Postgres session holding (or trying for) the advisory lock.
  * Implementations MUST pin a single backend session — the lock is
  * session-scoped, so a pooled client that transparently swaps connections

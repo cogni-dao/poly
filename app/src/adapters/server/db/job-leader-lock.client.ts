@@ -37,6 +37,19 @@
  *     this session's own connection (no extra slot), so the gauge cannot disagree
  *     with the role's real backend count the way a client-side opened/closed
  *     counter does.
+ *   - LOCK_NEVER_OUTLIVES_ITS_HOLDER (bug.5066): the session asks the server to end
+ *     it after `idle_session_timeout` of silence. A holder whose TCP session dies
+ *     without a FIN/RST (Akash closes the lease, the pod vanishes behind NAT) leaves
+ *     a half-open backend that still holds the advisory lock; the server only reaps
+ *     it via keepalive after ~2h11m (tcp_keepalives_idle 7200 + 9 x 75). Live
+ *     candidate-a: pids 716323/716335 held `poly:job-runner` for hours after their
+ *     lease closed, and the new pod sat in standby. Idle timeout is the principled
+ *     bound because the lock IS a lease: its holder proves liveness by talking
+ *     (heartbeat 10s / retry 20s), so silence for 3 intervals ends it. It is a
+ *     USERSET per-session value (no role/server change; database-expert axiom 3),
+ *     independent of NAT/kernel keepalive behaviour, and also catches a holder that
+ *     is alive at TCP level but frozen. A server without the setting (PG < 14)
+ *     refuses the connection loudly at connect, so election never runs unbounded.
  * Side-effects: IO (one database connection per created session)
  * Links: work/items/task.5016, src/bootstrap/jobs/job-leader-elector.ts,
  *   packages/db-client/src/build-client.ts (pool backend math)
@@ -47,6 +60,7 @@ import postgres from "postgres";
 
 import {
 	JOB_LEADER_LOCK_KEY_TEXT,
+	LEADER_SESSION_IDLE_TIMEOUT_MS,
 	type LeaderBackendStats,
 	type LeaderLockSession,
 } from "@/bootstrap/jobs/job-leader-elector";
@@ -62,6 +76,12 @@ export interface JobLeaderLockSessionOptions {
 	 * Tests override per instance so they can terminate a specific backend.
 	 */
 	applicationName?: string;
+	/**
+	 * Server-side `idle_session_timeout` for this session, ms (default
+	 * `LEADER_SESSION_IDLE_TIMEOUT_MS`). MUST exceed the elector's retry and
+	 * heartbeat intervals, or a healthy session is ended between probes.
+	 */
+	idleSessionTimeoutMs?: number;
 }
 
 /**
@@ -93,6 +113,9 @@ export async function createJobLeaderLockSession(
 		},
 		connection: {
 			application_name: applicationName,
+			// LOCK_NEVER_OUTLIVES_ITS_HOLDER: unitless value = milliseconds.
+			idle_session_timeout:
+				options.idleSessionTimeoutMs ?? LEADER_SESSION_IDLE_TIMEOUT_MS,
 		},
 	});
 
