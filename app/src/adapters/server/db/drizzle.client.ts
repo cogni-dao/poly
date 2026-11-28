@@ -17,17 +17,18 @@ import { createAppDbClient, type Database } from "@cogni/db-client";
 import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
 import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+import { processSingleton } from "@/shared/util/process-singleton";
 
 export type { Database };
 
-// Lazy database connection - only created when first accessed
-let _db: Database | null = null;
-
+// Lazy database connection - only created when first accessed. ONE_PER_PROCESS
+// (bug.5066): held in the process registry, not a module variable — Next evaluates
+// this module once per bundle graph, and each copy would dial its own pool.
 function createDb(): Database {
-  if (!_db) {
+  return processSingleton("db.app", () => {
     const env = serverEnv();
     // Pool budget: DB_POOL_MAX (default 1; explicit overrides are preserved). Backend math: packages/db-client/src/build-client.ts.
-    _db = createAppDbClient(env.DATABASE_URL, { max: env.DB_POOL_MAX });
+    const db = createAppDbClient(env.DATABASE_URL, { max: env.DB_POOL_MAX });
     // Construction is not a request; this is configuration, not connection success.
     makeLogger({ nodeId: getNodeId() }).info(
       {
@@ -39,8 +40,8 @@ function createDb(): Database {
       },
       EVENT_NAMES.DB_POOL_CONFIGURED
     );
-  }
-  return _db;
+    return db;
+  });
 }
 
 // Export lazy database getter to avoid top-level runtime env access

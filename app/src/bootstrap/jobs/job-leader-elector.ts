@@ -42,6 +42,10 @@
  *     `dashboard-route-cache.ts`) remain per-replica by design — a second
  *     replica only degrades cache hit rate, never correctness.
  * Side-effects: timers, logs; IO only through the injected session port.
+ *   - FENCE_BEFORE_TAKEOVER (bug.5066): every lock probe is bounded
+ *     (`probeTimeoutMs`); a probe that times out is a failed probe, so a holder
+ *     cut off from the database demotes (jobs stopped FIRST) before the server's
+ *     idle timeout frees the lock for a standby. See DEFAULT_LEADER_PROBE_TIMEOUT_MS.
  * Links: work/items/task.5016,
  *   src/adapters/server/db/job-leader-lock.client.ts (session adapter),
  *   src/features/trading/order-ledger.ts (advisory keyspace note),
@@ -65,6 +69,37 @@ export const DEFAULT_LEADER_RETRY_INTERVAL_MS = 20_000;
 export const DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 10_000;
 
 /**
+ * Fence: a lock probe that has not answered within this long is treated as a
+ * failed probe (bug.5066). A partitioned holder's query is never ACKed, so without
+ * a bound `tryAcquire()` hangs until the kernel gives up on the socket (~15 min,
+ * tcp_retries2) while the holder keeps `leader=true` and its jobs running, long
+ * after the server (see LEADER_SESSION_IDLE_TIMEOUT_MS) freed the lock and a
+ * standby took over: two leaders.
+ *
+ * FENCE_BEFORE_TAKEOVER: the holder demotes no later than one heartbeat plus this
+ * timeout after its last answered probe; the server frees the lock no earlier than
+ * LEADER_SESSION_IDLE_TIMEOUT_MS after that same moment. So
+ *   heartbeat + probe timeout  <  idle timeout
+ * (10s + 20s = 30s < 60s) and the old holder has stopped its jobs before any
+ * standby can acquire. Asserted in tests/unit/bootstrap/job-leader-elector.test.ts.
+ */
+export const DEFAULT_LEADER_PROBE_TIMEOUT_MS =
+	2 * DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS;
+
+/**
+ * How long the SERVER lets a leader-lock session sit idle before it ends it
+ * (`idle_session_timeout`, bug.5066). Every live session talks at least once per
+ * retry interval (standby) or heartbeat interval (leader), so three retry intervals
+ * of silence means the holder is dead or frozen: the server ends the session and
+ * Postgres releases its advisory lock. Without it, a holder whose TCP session dies
+ * silently (an Akash lease closed, a pod killed behind NAT) keeps the lock until
+ * Postgres' kernel-default keepalive notices — tcp_keepalives_idle 7200s + 9 x 75s
+ * = ~2h11m — and no pod runs the background jobs meanwhile.
+ */
+export const LEADER_SESSION_IDLE_TIMEOUT_MS =
+	3 * DEFAULT_LEADER_RETRY_INTERVAL_MS;
+
+/**
  * One pinned Postgres session holding (or trying for) the advisory lock.
  * Implementations MUST pin a single backend session — the lock is
  * session-scoped, so a pooled client that transparently swaps connections
@@ -81,6 +116,26 @@ export interface LeaderLockSession {
 	 * MUST swallow its own errors (a dead connection is the common case).
 	 */
 	dispose(): Promise<void>;
+	/**
+	 * Backend counts as the DATABASE reports them (pg_stat_activity), read on
+	 * this session's own connection (bug.5066). Never throws; `undefined` when
+	 * unavailable. Optional so unit-test fakes stay flat.
+	 */
+	backendStats?(): Promise<LeaderBackendStats | undefined>;
+}
+
+/**
+ * Real Postgres backends, from pg_stat_activity. Compare `pod` with the
+ * pod's budget (service pool + read pool + this leader connection): a
+ * number above it is a leak, whatever the client-side bookkeeping says.
+ */
+export interface LeaderBackendStats {
+	/** Client backends of this session's role, all pods. Compare with the role CONNECTION LIMIT. */
+	role: number;
+	/** Of those, backends from this session's client address (this pod, or the NAT address it shares). */
+	pod: number;
+	/** Of those, backends carrying the leader-lock application_name — expected 1 per pod. */
+	leader: number;
 }
 
 /** Minimal structural logger (pino-compatible) so unit tests fake it flat. */
@@ -102,6 +157,8 @@ export interface JobLeaderElectorDeps {
 	instanceId: string;
 	retryIntervalMs?: number;
 	heartbeatIntervalMs?: number;
+	/** Bound on one lock probe (FENCE_BEFORE_TAKEOVER). Default `DEFAULT_LEADER_PROBE_TIMEOUT_MS`. */
+	probeTimeoutMs?: number;
 }
 
 export interface JobLeaderElectorHandle {
@@ -109,6 +166,14 @@ export interface JobLeaderElectorHandle {
 	isLeader(): boolean;
 	/** Stop electing: stop jobs if leader, release the lock, clear timers. */
 	stop(): Promise<void>;
+}
+
+/** A lock probe that did not answer within `probeTimeoutMs`. */
+class ProbeTimeoutError extends Error {
+	constructor(ms: number) {
+		super(`leader-lock probe timed out after ${ms}ms — fencing`);
+		this.name = "ProbeTimeoutError";
+	}
 }
 
 /**
@@ -122,6 +187,8 @@ export function startJobLeaderElector(
 	const retryMs = deps.retryIntervalMs ?? DEFAULT_LEADER_RETRY_INTERVAL_MS;
 	const heartbeatMs =
 		deps.heartbeatIntervalMs ?? DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS;
+	const probeTimeoutMs =
+		deps.probeTimeoutMs ?? DEFAULT_LEADER_PROBE_TIMEOUT_MS;
 	const baseLog = {
 		lock_key: JOB_LEADER_LOCK_KEY_TEXT,
 		instance_id: deps.instanceId,
@@ -133,6 +200,41 @@ export function startJobLeaderElector(
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let ticking = false;
 	let standbyLogged = false;
+
+	/** Real-backend snapshot (bug.5066) for log lines; never throws. */
+	async function stats(): Promise<Record<string, unknown>> {
+		try {
+			const backends = await session?.backendStats?.();
+			return backends ? { backends } : {};
+		} catch {
+			return {};
+		}
+	}
+
+	/**
+	 * One lock probe, bounded (FENCE_BEFORE_TAKEOVER). The abandoned query may
+	 * still reject later (socket finally dies) — swallow it so it is never an
+	 * unhandled rejection.
+	 */
+	async function probe(s: LeaderLockSession): Promise<boolean> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const pending = s.tryAcquire();
+		pending.catch(() => {});
+		try {
+			return await Promise.race([
+				pending,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() => reject(new ProbeTimeoutError(probeTimeoutMs)),
+						probeTimeoutMs,
+					);
+					timer.unref?.();
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
 
 	function schedule(ms: number): void {
 		if (stopped) return;
@@ -190,14 +292,32 @@ export function startJobLeaderElector(
 				try {
 					session = await deps.createSession();
 				} catch (err) {
-					deps.logger.warn(
-						{
-							event: "jobs.leader_lock_connect_failed",
-							...baseLog,
-							err: err instanceof Error ? err.message : String(err),
-						},
-						"leader-lock connection failed — retrying",
-					);
+					const sqlstate = (err as { code?: unknown } | null)?.code;
+					if (sqlstate === "42704") {
+						// unrecognized configuration parameter: the server does not know
+						// `idle_session_timeout` (PostgreSQL < 14). The session cannot be
+						// bounded, so election refuses to run — no pod runs jobs. Not a
+						// transient connect error.
+						deps.logger.error(
+							{
+								event: "jobs.leader_lock_unsupported_server",
+								...baseLog,
+								sqlstate,
+								err: err instanceof Error ? err.message : String(err),
+							},
+							"leader-lock server rejected idle_session_timeout (needs PostgreSQL >= 14) — election cannot run, no pod will run background jobs",
+						);
+					} else {
+						deps.logger.warn(
+							{
+								event: "jobs.leader_lock_connect_failed",
+								...baseLog,
+								sqlstate,
+								err: err instanceof Error ? err.message : String(err),
+							},
+							"leader-lock connection failed — retrying",
+						);
+					}
 					schedule(retryMs);
 					return;
 				}
@@ -209,11 +329,16 @@ export function startJobLeaderElector(
 
 			let acquired: boolean;
 			try {
-				acquired = await session.tryAcquire();
+				acquired = await probe(session);
 			} catch (err) {
-				// Connection died. If leader: the lock auto-released server-side the
-				// moment our session ended — stop jobs and race to reacquire.
-				if (leader) demote("session_error", err);
+				// Connection died — or went silent (ProbeTimeoutError). If leader:
+				// the lock is auto-released server-side once the session ends (now,
+				// or after the idle timeout) — stop jobs FIRST and race to reacquire.
+				if (leader)
+					demote(
+						err instanceof ProbeTimeoutError ? "probe_timeout" : "session_error",
+						err,
+					);
 				else
 					deps.logger.warn(
 						{
@@ -228,6 +353,12 @@ export function startJobLeaderElector(
 				return;
 			}
 
+			// Real-backend gauge for the two edge logs below. Read BEFORE the state
+			// flips (and before the `stopped` re-check) so the await cannot race a
+			// stop() into starting jobs on a stopped elector.
+			const backendStats =
+				!leader && (acquired || !standbyLogged) ? await stats() : {};
+
 			if (stopped) {
 				// stop() raced our probe; stop() handles job/session teardown.
 				return;
@@ -238,7 +369,7 @@ export function startJobLeaderElector(
 					leader = true;
 					standbyLogged = false;
 					deps.logger.info(
-						{ event: "jobs.leader_acquired", ...baseLog },
+						{ event: "jobs.leader_acquired", ...baseLog, ...backendStats },
 						"job-runner leadership acquired — starting all background jobs",
 					);
 					try {
@@ -267,6 +398,7 @@ export function startJobLeaderElector(
 						{
 							event: "jobs.leader_standby",
 							...baseLog,
+							...backendStats,
 							retry_interval_ms: retryMs,
 						},
 						"another pod holds the job-runner lock — standing by",
