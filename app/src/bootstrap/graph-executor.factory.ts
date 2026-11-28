@@ -21,7 +21,7 @@
  *     internal-agent principal reaches a graph tool; see
  *     ./ai/principal-tool-source and https://poly.cognidao.org/knowledge/capability-plane-contract. NEVER cache
  *     or hoist that source.
- *   - NODE_RUNTIME_CATALOG_BOUNDARY: graph sets come from
+ *   - NODE_RUNTIME_CATALOG_BOUNDARY: graph sets come from the one composed
  *     POLY_NODE_LANGGRAPH_CATALOG (app runtime policy), not from the shared
  *     @cogni/langgraph-graphs base catalog.
  * Side-effects: global (module-scoped McpConnectionCache, cached sandbox provider promise)
@@ -29,7 +29,11 @@
  * @public
  */
 
-import type { SourceSystem, ToolSourcePort } from "@cogni/ai-core";
+import type {
+  BoundToolRuntime,
+  SourceSystem,
+  ToolSourcePort,
+} from "@cogni/ai-core";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import type { CatalogBoundTool } from "@cogni/ai-tools";
 import type {
@@ -51,6 +55,8 @@ import {
   loadMcpTools,
   McpToolSource,
   parseMcpConfigFromEnv,
+  requiresInProcess,
+  resolveNodeSourceContext,
 } from "@cogni/langgraph-graphs";
 import {
   contractToRuntime,
@@ -69,7 +75,10 @@ import {
 } from "@/adapters/server";
 import { runInScope } from "@/adapters/server/ai/execution-scope";
 import { createLangGraphDispatch } from "@/adapters/server/ai/langgraph/dispatch";
-import { loadCogniSourceContext } from "@/adapters/server/ai/langgraph/source-context";
+import {
+  packageToolBundle,
+  type RunTools,
+} from "@/adapters/server/ai/langgraph";
 import { resolveSandboxWorkspaceOrigin } from "@/bootstrap/capabilities/sandbox-workspace";
 import { bindScheduleModel } from "@/bootstrap/capabilities/schedule-model";
 import type {
@@ -96,6 +105,12 @@ import {
   resolveAiAdapterDeps,
   resolveAppDb,
 } from "./container";
+
+/** Poly's tool contracts: the node's core bundle plus the principal-scoped tools. The provider reads `requires`, `effect` and `secretArgs` from them. */
+const NODE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
+  ...POLY_CORE_TOOL_BUNDLE,
+  ...PRINCIPAL_TOOL_BUNDLE,
+];
 
 /**
  * Factory for creating NamespaceGraphRouter with all configured providers.
@@ -129,7 +144,12 @@ export function createGraphExecutor(
   // keep dev-server routing.
   const inproc = createInProcProvider(deps, completionStreamFn, userId);
   const dev = devUrl ? createDevProvider(devUrl) : undefined;
-  const langGraphProvider = createLangGraphDispatch(inproc, dev);
+  const langGraphProvider = createLangGraphDispatch(
+    inproc,
+    POLY_NODE_LANGGRAPH_CATALOG,
+    NODE_TOOL_BUNDLE,
+    dev
+  );
 
   // Build namespace → provider map
   const env = serverEnv();
@@ -587,66 +607,91 @@ function createInProcProvider(
   });
 
   const cache = getMcpCache();
-  return new LangGraphInProcProvider(
-    inprocAdapter,
-    composeToolSources(principalToolSource, container.toolSource),
-    () => cache.getSource(),
-    [...POLY_CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
-    POLY_NODE_LANGGRAPH_CATALOG,
-    {
-      sharedTools: (req) => ({
-        [scheduleListContract.name]: {
-          contract:
-            scheduleListContract as unknown as CatalogBoundTool["contract"],
-          runtime: contractToRuntime(
-            scheduleListContract,
-            createScheduleListImplementation({
-              scheduleCapability: container.sharedScheduleCapability,
-            }),
-          ),
-        },
-        [scheduleManageContract.name]: {
-          contract:
-            scheduleManageContract as unknown as CatalogBoundTool["contract"],
-          runtime: contractToRuntime(
-            scheduleManageContract,
-            createScheduleManageImplementation({
-              scheduleCapability: bindScheduleModel(
-                container.sharedScheduleCapability,
-                req.modelRef,
-              ),
-            }),
-          ),
-        },
-      }),
-      resolvePrincipal: container.agentAuthority.resolvePrincipal,
-      guardDeps: container.agentAuthority.guardDeps,
+  const baseTools = composeToolSources(principalToolSource, container.toolSource);
+  return new LangGraphInProcProvider({
+    catalog: POLY_NODE_LANGGRAPH_CATALOG,
+    completion: inprocAdapter,
+    tools: baseTools,
+    toolBundle: NODE_TOOL_BUNDLE,
+    mcpTools: () => cache.getSource(),
+    authority: container.agentAuthority,
+    // The schedule tools carry the run's model (`bindScheduleModel`), so Poly composes them per run.
+    composeTools: (req) => composeScheduleTools(container, baseTools, req),
+    // COGNI_CODING_ACTOR_IDS is the coding audience (.cogni/workloads/poly.yaml). The shell opens only for a claimed run by one of them.
+    coding: {
       isCodingActor: (actor) =>
         serverEnv().COGNI_CODING_ACTOR_IDS.includes(actor),
-      sandboxReady: () => {
+      prerequisitesReady: () => {
         const env = serverEnv();
         return Boolean(
           env.SANDBOX_EXECD_TOKEN &&
             env.NODE_AI_OPERATOR_KEY &&
             env.COGNI_OPERATOR_URL &&
-            resolveSandboxWorkspaceOrigin(env, getNodeName()),
+            resolveSandboxWorkspaceOrigin(env, getNodeName())
         );
       },
-      sourceContext: async () => {
-        const env = serverEnv();
-        const mission = getNodeMission();
-        if (!mission || !env.APP_BASE_URL || !container.knowledgeStorePort)
-          throw new Error("node_source_context_unavailable");
-        return loadCogniSourceContext({
-          store: container.knowledgeStorePort,
-          nodeId: container.nodeId,
-          origin: env.APP_BASE_URL,
-          mission,
-          buildSha: env.APP_BUILD_SHA,
-        });
-      },
     },
-  );
+    sourceContext: async (required) => {
+      const env = serverEnv();
+      return resolveNodeSourceContext(
+        required,
+        container.nodeId,
+        env.APP_BASE_URL,
+        getNodeMission(),
+        env.APP_BUILD_SHA,
+        container.knowledgeStorePort
+      );
+    },
+  });
+}
+
+/**
+ * The tool source and contracts for one run: the released schedule contracts, with the run's model bound into `schedule_manage`.
+ * Every other tool is the per-request composed source's.
+ */
+function composeScheduleTools(
+  container: ReturnType<typeof getContainer>,
+  base: ToolSourcePort,
+  req: GraphRunRequest
+): RunTools {
+  const overrides: Record<
+    string,
+    { contract: CatalogBoundTool["contract"]; runtime: BoundToolRuntime }
+  > = {
+    [scheduleListContract.name]: {
+      contract: scheduleListContract as unknown as CatalogBoundTool["contract"],
+      runtime: contractToRuntime(
+        scheduleListContract,
+        createScheduleListImplementation({
+          scheduleCapability: container.sharedScheduleCapability,
+        })
+      ),
+    },
+    [scheduleManageContract.name]: {
+      contract:
+        scheduleManageContract as unknown as CatalogBoundTool["contract"],
+      runtime: contractToRuntime(
+        scheduleManageContract,
+        createScheduleManageImplementation({
+          scheduleCapability: bindScheduleModel(
+            container.sharedScheduleCapability,
+            req.modelRef
+          ),
+        })
+      ),
+    },
+  };
+  return {
+    tools: {
+      getBoundTool: (id) => overrides[id]?.runtime ?? base.getBoundTool(id),
+      listToolSpecs: () => base.listToolSpecs(),
+      hasToolId: (id) => id in overrides || base.hasToolId(id),
+    },
+    toolBundle: NODE_TOOL_BUNDLE.map((bound) => {
+      const override = overrides[bound.contract.name];
+      return override ? { ...bound, contract: override.contract } : bound;
+    }),
+  };
 }
 
 /**
@@ -655,13 +700,14 @@ function createInProcProvider(
  */
 function createDevProvider(apiUrl: string): LangGraphDevProvider {
   const client = createLangGraphDevClient({ apiUrl });
-  // Per NODE_RUNTIME_CATALOG_BOUNDARY: this node's graph set, matching what the
-  // in-proc provider executes. Cogni always runs in-process (see dispatch), so the
-  // dev server never advertises it.
-  const availableGraphs = Object.keys(POLY_NODE_LANGGRAPH_CATALOG).filter(
-    (name) => name !== "cogni",
-  );
-  return new LangGraphDevProvider(client, { availableGraphs });
+  // The dev server runs only plain read-only graphs; anything the package routes in-process never reaches it.
+  const availableGraphs = Object.entries(POLY_NODE_LANGGRAPH_CATALOG)
+    .filter(([, entry]) => !requiresInProcess(entry, packageToolBundle(NODE_TOOL_BUNDLE)))
+    .map(([name]) => name);
+  return new LangGraphDevProvider(client, {
+    availableGraphs,
+    catalog: POLY_NODE_LANGGRAPH_CATALOG,
+  });
 }
 
 // ---------------------------------------------------------------------------

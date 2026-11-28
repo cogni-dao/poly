@@ -14,32 +14,34 @@
  */
 
 import type { AiEvent, ToolSourcePort } from "@cogni/ai-core";
-import { TOOL_CATALOG, toBoundToolRuntime } from "@cogni/ai-tools";
+import {
+  CORE_TOOL_BUNDLE,
+  TOOL_CATALOG,
+  toBoundToolRuntime,
+} from "@cogni/ai-tools";
+import {
+  type CreateGraphFn,
+  type LangGraphCatalog,
+} from "@cogni/langgraph-graphs";
 import { createPolyBrainGraph } from "@cogni/poly-graphs";
 import { describe, expect, it, vi } from "vitest";
 
 import { runInScope } from "@/adapters/server/ai/execution-scope";
 import type { CompletionUnitAdapter } from "@/adapters/server/ai/langgraph/inproc.provider";
 import { LangGraphInProcProvider } from "@/adapters/server/ai/langgraph/inproc.provider";
+import { POLY_NODE_LANGGRAPH_CATALOG } from "@/bootstrap/ai/node-catalog";
 import type { GraphRunRequest } from "@/ports";
 
-// A plain harness graph (no tools, no shared runtime): provider wiring runs on this test-only entry.
-vi.mock("@cogni/langgraph-graphs", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@cogni/langgraph-graphs")>();
-  return {
-    ...actual,
-    LANGGRAPH_CATALOG: {
-      ...actual.LANGGRAPH_CATALOG,
-      "test-plain": {
-        displayName: "Test plain",
-        description: "plain harness graph without tools",
-        toolIds: [],
-        graphFactory: createPolyBrainGraph,
-      },
-    },
-  };
-});
+// A plain harness graph (no tools, no principal): provider wiring runs on this test-only entry beside Poly's composed catalog.
+const TEST_CATALOG: LangGraphCatalog = {
+  ...POLY_NODE_LANGGRAPH_CATALOG,
+  "test-plain": {
+    displayName: "Test plain",
+    description: "plain harness graph without tools",
+    toolIds: [],
+    graphFactory: createPolyBrainGraph as CreateGraphFn,
+  },
+};
 
 const TEST_SCOPE = {
   billing: {
@@ -156,10 +158,12 @@ describe("LangGraphInProcProvider", () => {
         ];
         const mockAdapter = createMockAdapter({ events: adapterEvents });
         const mockToolSource = createMockToolSource();
-        const provider = new LangGraphInProcProvider(
-          mockAdapter,
-          mockToolSource
-        );
+        const provider = new LangGraphInProcProvider({
+          catalog: TEST_CATALOG,
+          completion: mockAdapter,
+          tools: mockToolSource,
+          toolBundle: [...CORE_TOOL_BUNDLE],
+        });
 
         const request = createTestRequest({ graphId: "langgraph:test-plain" });
         const { stream, final } = provider.runGraph(request);
@@ -197,10 +201,12 @@ describe("LangGraphInProcProvider", () => {
       await runInScope(TEST_SCOPE, async () => {
         const mockAdapter = createMockAdapter();
         const mockToolSource = createMockToolSource();
-        const provider = new LangGraphInProcProvider(
-          mockAdapter,
-          mockToolSource
-        );
+        const provider = new LangGraphInProcProvider({
+          catalog: TEST_CATALOG,
+          completion: mockAdapter,
+          tools: mockToolSource,
+          toolBundle: [...CORE_TOOL_BUNDLE],
+        });
 
         // Request with graph not in catalog
         const request = createTestRequest({
@@ -235,10 +241,12 @@ describe("LangGraphInProcProvider", () => {
       await runInScope(TEST_SCOPE, async () => {
         const mockAdapter = createMockAdapter();
         const mockToolSource = createMockToolSource();
-        const provider = new LangGraphInProcProvider(
-          mockAdapter,
-          mockToolSource
-        );
+        const provider = new LangGraphInProcProvider({
+          catalog: TEST_CATALOG,
+          completion: mockAdapter,
+          tools: mockToolSource,
+          toolBundle: [...CORE_TOOL_BUNDLE],
+        });
 
         // Request with wrong provider prefix
         const request = createTestRequest({

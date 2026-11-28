@@ -44,7 +44,7 @@ AI feature owns all LLM interaction endpoints, runtimes, and services. Provides 
   - `getPreferredModelId`, `setPreferredModelId`, `validatePreferredModel` (localStorage preferences)
   - `StreamFinalResult` (discriminated union for stream completion: ok with usage/finishReason, or error)
   - `AiEvent` (union of all AI runtime events: text_delta, tool events, done)
-  - `createToolRunner` (tool execution factory; owns toolCallId; emits tool lifecycle AiEvents)
+  - `ToolRunner` type (the tool runner itself runs inside the shared in-process provider)
   - `uiMessagesToMessageDtos` (UIMessage[] → MessageDto[] bridge for thread persistence pipeline)
   - `redactSecretsInMessages` (best-effort credential redaction before persistence)
   - `assembleAssistantMessage` (AiEvent[] → UIMessage; deterministic ID `assistant-{runId}` for idempotent thread persistence)

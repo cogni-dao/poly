@@ -52,10 +52,31 @@ describe("shared Cogni harness binding (real catalog and bundles)", () => {
     }
   });
 
-  it("gives poly-brain only read_only tools", () => {
-    for (const id of POLY_NODE_LANGGRAPH_CATALOG["poly-brain"]?.toolIds ?? []) {
-      expect(byId.get(id)?.effect, `${id} effect`).toBe("read_only");
+  it("gives poly-brain and poly-research only read_only tools, each resolvable in the node bundle (adoption audit)", () => {
+    for (const graph of ["poly-brain", "poly-research"]) {
+      const toolIds = POLY_NODE_LANGGRAPH_CATALOG[graph]?.toolIds ?? [];
+      expect(toolIds.length, `${graph} tools`).toBeGreaterThan(0);
+      for (const id of toolIds) {
+        expect(byId.get(id)?.effect, `${graph}: ${id} effect`).toBe("read_only");
+        expect(byId.get(id)?.requires, `${graph}: ${id} requires`).toBeUndefined();
+      }
     }
+  });
+
+  it("names a seeded internal principal only where a graph needs one", () => {
+    const principals = Object.fromEntries(
+      Object.entries(POLY_NODE_LANGGRAPH_CATALOG).map(([name, entry]) => [
+        name,
+        entry.principal,
+      ])
+    );
+    // 0092 seeds node-ai and prioritizer. Poly's own graphs offer no scoped tool, so they name none.
+    expect(principals).toEqual({
+      cogni: "node-ai",
+      "work-prioritizer": "prioritizer",
+      "poly-brain": undefined,
+      "poly-research": undefined,
+    });
   });
 
   it("declares requires on every non-read_only contract in the node bundles", () => {
@@ -78,5 +99,7 @@ describe("shared Cogni harness binding (real catalog and bundles)", () => {
     expect(prompt).not.toContain("core__work_item_update");
     expect(prompt).not.toContain("core__work_item_artifact_record");
     expect(prompt).toContain("langgraph:work-prioritizer");
+    expect(prompt).toContain("langgraph:poly-brain");
+    expect(prompt).toContain("langgraph:poly-research");
   });
 });

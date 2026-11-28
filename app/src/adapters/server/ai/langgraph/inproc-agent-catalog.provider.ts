@@ -18,8 +18,6 @@
  * @internal
  */
 
-import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
-
 import type { AgentDescriptor } from "@/ports";
 
 import type { AgentCatalogProvider } from "../agent-catalog.provider";
@@ -49,14 +47,21 @@ export class LangGraphInProcAgentCatalogProvider
   private readonly agentDescriptors: readonly AgentDescriptor[];
 
   /**
-   * @param catalog - This node's catalog, INJECTED from the bootstrap
+   * @param catalog - This node's one composed catalog, INJECTED from the bootstrap
    *   composition root so discovery lists exactly the graphs the execution
-   *   provider can run. Defaults to the shared base catalog.
+   *   provider can run (and the `cogni` prompt names).
    */
   constructor(
     private readonly catalog: Readonly<
-      Record<string, { displayName: string; description: string }>
-    > = LANGGRAPH_CATALOG
+      Record<
+        string,
+        {
+          displayName: string;
+          description: string;
+          readonly listed?: boolean | undefined;
+        }
+      >
+    >
   ) {
     // Build descriptors from catalog at construction time
     this.agentDescriptors = this.buildDescriptors();
@@ -68,7 +73,9 @@ export class LangGraphInProcAgentCatalogProvider
    * Per LANGGRAPH_SERVER_ALIGNED: uses 'name' field (not displayName).
    */
   private buildDescriptors(): readonly AgentDescriptor[] {
-    return Object.entries(this.catalog).map(([graphName, entry]) => {
+    return Object.entries(this.catalog)
+      .filter(([, entry]) => entry.listed !== false)
+      .map(([graphName, entry]) => {
       const graphId = `${this.providerId}:${graphName}`;
       return {
         agentId: graphId, // P0: agentId === graphId

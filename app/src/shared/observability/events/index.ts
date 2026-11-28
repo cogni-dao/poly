@@ -28,6 +28,13 @@ export const EVENT_NAMES = {
 	AI_PERMISSION_COMPLETE: "ai_permission.complete",
 	// Agent authority host (`@cogni/agent-grants/host`, AGENT_HOST_EVENTS): the names repeat the package's values (parity test).
 	AGENT_TOOL_AUTHZ: "agent_tool.authz",
+	// In-process provider (`@cogni-dao/langgraph-graphs/inproc`, INPROC_EVENTS): the names repeat the package's values (parity test).
+	/** A run ended cleanly because a tool was denied or every write tool was withheld. */
+	AGENT_RUN_DENIED: "agent_run.denied",
+	/** A coding run stopped before its first model call (identity_mismatch, policy_denied, authz_unavailable, sandbox_unavailable). */
+	AGENT_RUN_START_DENIED: "agent_run.start_denied",
+	/** The shell was withheld from a run that continues (unclaimed, not_audience). */
+	AGENT_CODING_SHELL_WITHHELD: "agent_coding.shell_withheld",
 	AGENT_ROLE_GRANTED: "agent_role.granted",
 	AGENT_ROLE_REVOKED: "agent_role.revoked",
 	AGENT_ROLE_REQUESTED: "agent_role.requested",

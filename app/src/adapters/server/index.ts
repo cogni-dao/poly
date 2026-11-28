@@ -49,8 +49,6 @@ export {
   LANGGRAPH_INPROC_AGENT_CATALOG_PROVIDER_ID,
   // Execution provider (requires CompletionUnitAdapter)
   LANGGRAPH_PROVIDER_ID,
-  type LangGraphCatalog,
-  type LangGraphCatalogEntry,
   LangGraphDevAgentCatalogProvider,
   type LangGraphDevClientConfig,
   LangGraphDevProvider,

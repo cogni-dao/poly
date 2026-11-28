@@ -3,30 +3,17 @@
 
 /**
  * Module: `@tests/unit/adapters/server/ai/langgraph/shared-cogni-prompt`
- * Purpose: The prompt the provider hands the shared runner is the node's, not the released template's.
- * Scope: Poly's REAL node catalog and the real released cogni entry; only the shared runner is replaced, to capture its options.
+ * Purpose: The prompt the package provider hands the model is the node's composed one, not the released template's.
+ * Scope: Poly's REAL composed catalog, the real package provider and runner; only the billed completion is a fake, to capture the system prompt it receives.
  * Invariants: PROMPT_MATCHES_NODE: the coordinator prompt reaching the runner names no `work-closeout`, no `core__work_item_update`
  *   and no `core__work_item_artifact_record`, and still lists the workflows this node runs.
  * Side-effects: none
- * Links: src/adapters/server/ai/langgraph/inproc.provider.ts (runSharedCogni), packages/langgraph-graphs/src/catalog.ts
+ * Links: src/adapters/server/ai/langgraph/inproc.provider.ts, src/bootstrap/ai/node-catalog.ts
  * @internal
  */
 
 import { describe, expect, it, vi } from "vitest";
 
-const captured = vi.hoisted(() => ({ options: undefined as any }));
-vi.mock("@cogni/langgraph-graphs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@cogni/langgraph-graphs")>()),
-  createSharedInProcGraphRunner: (options: any) => {
-    captured.options = options;
-    return {
-      stream: (async function* () {
-        yield { type: "done" };
-      })(),
-      final: Promise.resolve({ ok: true, content: "ok" }),
-    };
-  },
-}));
 vi.mock("@/shared/observability", async () => ({
   EVENT_NAMES: {},
   failureFields: () => ({}),
@@ -39,40 +26,40 @@ import { POLY_NODE_LANGGRAPH_CATALOG } from "@/bootstrap/ai/node-catalog";
 
 const actor = "dfa8570f-d487-4239-b40a-2e39ee4513f9";
 
-describe("coordinator prompt handed to the shared runner", () => {
-  it("is this node's rewritten prompt: no work-closeout and no prioritizer write tools", async () => {
-    const provider = new LangGraphInProcProvider(
-      {
-        executeCompletionUnit: () => ({
-          stream: (async function* () {})(),
-          final: Promise.resolve({ ok: true, content: "" }),
-        }),
-      } as any,
-      {
+describe("coordinator prompt handed to the model", () => {
+  it("is this node's composed prompt: no work-closeout and no prioritizer write tools", async () => {
+    const completion = vi.fn((_params: any) => ({
+      stream: (async function* () {})(),
+      final: Promise.resolve({
+        ok: true as const,
+        content: "done",
+        finishReason: "stop",
+      }),
+    }));
+    const provider = new LangGraphInProcProvider({
+      catalog: POLY_NODE_LANGGRAPH_CATALOG,
+      completion: { executeCompletionUnit: completion } as any,
+      tools: {
         getBoundTool: () => undefined,
         listToolSpecs: () => [],
         hasToolId: () => false,
       } as any,
-      async () => null,
-      [],
-      POLY_NODE_LANGGRAPH_CATALOG,
-      {
+      toolBundle: [],
+      authority: {
         resolvePrincipal: async () => "program-principal",
         guardDeps: {
           withStore: async (fn: any) =>
             fn({ liveScopes: async () => [], hasLiveRole: async () => false }),
           adminCheck: async () => "denied" as const,
         },
-        sourceContext: async () => ({
-          nodeId: "poly",
-          origin: "https://poly.cognidao.org",
-          mission: { content: "poly" },
-          governingIndex: [],
-        }),
-        isCodingActor: () => false,
-        sandboxReady: () => false,
-      } as any
-    );
+      } as any,
+      sourceContext: async () => ({
+        nodeId: "poly",
+        origin: "https://poly.cognidao.org",
+        mission: { content: "poly", sourceRef: "fixture", buildSha: null },
+        governingIndex: [],
+      }),
+    });
     const scope = {
       actorUserId: actor,
       billing: { billingAccountId: "account", virtualKeyId: "key" },
@@ -89,11 +76,23 @@ describe("coordinator prompt handed to the shared runner", () => {
         } as any,
         { actorUserId: actor } as any
       );
+      for await (const _event of run.stream) {
+        /* drain */
+      }
       await run.final;
     });
-    const prompt: string = captured.options?.systemPrompt ?? "";
+    const sent = (completion.mock.calls[0]?.[0]?.messages ?? []) as {
+      role: string;
+      content: unknown;
+    }[];
+    const prompt = sent
+      .filter((m) => m.role === "system")
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
     expect(prompt).toContain("Host-owned registered workflows:");
     expect(prompt).toContain("langgraph:work-prioritizer");
+    expect(prompt).toContain("langgraph:poly-brain");
+    expect(prompt).toContain("langgraph:poly-research");
     expect(prompt).not.toContain("work-closeout");
     expect(prompt).not.toContain("core__work_item_update");
     expect(prompt).not.toContain("core__work_item_artifact_record");

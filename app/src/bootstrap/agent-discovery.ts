@@ -49,7 +49,7 @@ export function createAgentCatalog(): {
   // Per MUTUAL_EXCLUSION: choose provider based on LANGGRAPH_DEV_URL env
   const env = serverEnv();
   const providers: AgentCatalogProvider[] = env.LANGGRAPH_DEV_URL
-    ? [new LangGraphDevAgentCatalogProvider()]
+    ? [new LangGraphDevAgentCatalogProvider(POLY_NODE_LANGGRAPH_CATALOG)]
     : // Per NODE_RUNTIME_CATALOG_BOUNDARY: inject THIS node's catalog so the
       // listing matches what createInProcProvider can actually execute. Without
       // it, `langgraph:poly-brain` is runnable but invisible to /api/v1/ai/agents.

@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
-/** Bind an authenticated chat actor to its durable workflow invocation. */
+/**
+ * Bind an authenticated chat actor to its durable workflow invocation.
+ *
+ * SOURCE PORT RECORD (https://cognidao.org/knowledge/port-node-source-once; story.0090). The literal port beside the shared provider is the run-claim signer
+ * and verifier the facade and the internal run route call (`shell-caller-run-claim`). The provider reads only the route's `runClaimVerified` flag.
+ *   - Source: node-template's claim helpers, as adopted by red#88; here `signChatActor`, `verifyChatActor`.
+ *   - Also ported from the same source and formerly recorded in the provider header (now deleted): `bootstrap/capabilities/schedule-model.ts` (`bindScheduleModel`), `app/(admin)/_lib/admin-session.ts`
+ *     (the one AdminSession mint) and `shared/observability/db-error-fields.ts` (`failureFields`). No package exports them yet; each leaves with the release that does.
+ *   - Exit: `@cogni-dao/graph-execution` 0.2.0 (`buildRunClaim`, `checkRunClaim`, `claimSlotOwnedBy`), which is not released yet. The same PR that adopts it deletes this file.
+ */
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 interface ChatActorIdentity {

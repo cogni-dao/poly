@@ -3,13 +3,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  options: undefined as any,
   sandbox: 0,
   mint: 0,
   live: true,
-  failure: "" as string,
-  legacy: 0,
-  identity: undefined as unknown,
 }));
 const ingress = vi.hoisted(() => ({
   headers: new Headers(),
@@ -27,48 +23,6 @@ vi.mock("@/lib/auth/server", () => ({
 vi.mock("@/shared/env/server", () => ({
   serverEnv: () => ({ AUTH_SECRET: "test-secret-123456789012345678901234" }),
 }));
-vi.mock("@cogni/langgraph-graphs", () => {
-  const cogni = {
-    displayName: "Cogni",
-    description: "Shared",
-    sharedRuntime: true,
-    toolIds: ["core__sandbox_shell"],
-    graphFactory: () => ({}),
-    principal: "node-ai",
-    program: "cogni",
-  };
-  return {
-    LANGGRAPH_CATALOG: {
-      cogni,
-      "red-solver": {
-        displayName: "Red Solver",
-        description: "legacy",
-        toolIds: [],
-        graphFactory: () => ({}),
-      },
-    },
-    SHARED_NODE_CATALOG: { cogni },
-    createInProcGraphRunner: () => {
-      state.legacy++;
-      return {
-        stream: (async function* () {
-          yield { type: "done" };
-        })(),
-        final: Promise.resolve({ ok: true }),
-      };
-    },
-    createSharedInProcGraphRunner: (options: any) => {
-      state.options = options;
-      options.completionFn({ messages: [], model: "model" });
-      return {
-        stream: (async function* () {
-          yield { type: "done" };
-        })(),
-        final: Promise.resolve({ ok: true, content: "ok" }),
-      };
-    },
-  };
-});
 vi.mock("@/shared/observability", async () => ({
   EVENT_NAMES: {},
   failureFields: (
@@ -79,20 +33,21 @@ vi.mock("@/shared/observability", async () => ({
   makeLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
 }));
 
+import { CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
+import { createInProcGraphRunner, SHARED_LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
 import { aiChatOperation } from "@cogni/node-contracts";
 import {
-  getExecutionScope,
   runInScope,
 } from "@/adapters/server/ai/execution-scope";
 import { createLangGraphDispatch } from "@/adapters/server/ai/langgraph/dispatch";
 import { LangGraphInProcProvider } from "@/adapters/server/ai/langgraph/inproc.provider";
 import {
-  loadCogniSourceContext,
-} from "@/adapters/server/ai/langgraph/source-context";
-import {
   issueAgentApiKey,
   resolveRequestIdentity,
 } from "@/app/_lib/auth/request-identity";
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
+import { POLY_NODE_LANGGRAPH_CATALOG } from "@/bootstrap/ai/node-catalog";
+import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
 import { bindScheduleModel } from "@/bootstrap/capabilities/schedule-model";
 import { signChatActor, verifyChatActor } from "@/bootstrap/chat-actor-proof";
 
@@ -113,7 +68,6 @@ const runtime = {
   validateInput: (x: unknown) => x,
   validateOutput: (x: unknown) => x,
   exec: async () => {
-    state.identity = getExecutionScope();
     state.sandbox++;
     state.mint++;
     return { ok: true };
@@ -124,28 +78,12 @@ const store = {
   liveScopes: async () => (state.live ? ["sandbox:exec"] : []),
   hasLiveRole: async () => state.live,
 };
-const deps = {
-  resolvePrincipal: async () =>
-    state.failure === "principal" ? null : "program-principal",
+const authority = {
+  resolvePrincipal: async () => "program-principal",
   guardDeps: {
-    withStore: async (fn: any) => {
-      if (state.failure === "store") throw new Error("unavailable");
-      return fn(store);
-    },
+    withStore: async (fn: any) => fn(store),
     adminCheck: async () => "denied" as const,
   },
-  sourceContext: async () => {
-    if (state.failure === "overflow")
-      throw new Error("governing_index_overflow");
-    return {
-      nodeId: "red",
-      origin: "https://red.cognidao.org",
-      mission: { content: "red" },
-      governingIndex: [],
-    };
-  },
-  isCodingActor: (id: string) => id === actor,
-  sandboxReady: () => state.failure !== "sandbox",
 };
 const req = {
   runId: "run",
@@ -156,7 +94,7 @@ const req = {
 const adapter = {
   executeCompletionUnit: vi.fn(() => ({
     stream: (async function* () {})(),
-    final: Promise.resolve({ ok: true, content: "" }),
+    final: Promise.resolve({ ok: true, content: "done", finishReason: "stop" }),
   })),
 };
 const source = {
@@ -164,121 +102,12 @@ const source = {
   listToolSpecs: () => [runtime.spec],
   hasToolId: (id: string) => id === shell,
 };
-async function launch(
-  user: string,
-  extra: Record<string, unknown> = {},
-  sourceContext = deps.sourceContext,
-) {
-  const scope = {
-    actorUserId: user,
-    billing: { billingAccountId: "account", virtualKeyId: "key" },
-    usageSource: "litellm",
-    llmService: {},
-  } as any;
-  const provider = new LangGraphInProcProvider(
-    adapter as any,
-    source as any,
-    async () => null,
-    [{ contract } as any],
-    undefined,
-    { ...deps, sourceContext } as any,
-  );
-  return runInScope(scope, async () => {
-    const run = provider.runGraph(
-      { ...req, ...extra } as any,
-      { actorUserId: user } as any,
-    );
-    await run.final;
-    return state.options;
-  });
-}
 beforeEach(() => {
-  state.options = undefined;
   state.sandbox = 0;
   state.mint = 0;
   state.live = true;
-  state.failure = "";
-  state.legacy = 0;
-  state.identity = undefined;
   adapter.executeCompletionUnit.mockClear();
 });
-describe("shared Cogni authority seam", () => {
-  it("carries trusted source and program and executes an allowed shell", async () => {
-    const opts = await launch(actor);
-    expect(adapter.executeCompletionUnit).toHaveBeenCalledOnce();
-    expect(opts.trustedActorId).toBe(actor);
-    expect(opts.trustedProgramId).toBe("cogni");
-    expect(opts.sourceContext.nodeId).toBe("red");
-    const result = await runInScope(
-      {
-        actorUserId: actor,
-        billing: { billingAccountId: "account", virtualKeyId: "key" },
-        usageSource: "litellm",
-        llmService: {},
-      } as any,
-      () => opts.createToolExecFn(() => {})(shell, {}),
-    );
-    expect(result.ok).toBe(true);
-    expect(state.sandbox).toBe(1);
-    expect(state.mint).toBe(1);
-    expect(state.identity).toMatchObject({
-      actorUserId: actor,
-      subjectUserId: actor,
-      principalId: "program-principal",
-      billing: { billingAccountId: "account" },
-    });
-  });
-  it("withholds shell and denies a forced call for another actor despite spoofed request data", async () => {
-    const opts = await launch("other", { actorUserId: actor });
-    expect(opts.request.configurable.toolIds).not.toContain(shell);
-    const result = await opts.createToolExecFn(() => {})(shell, {});
-    expect(result.errorCode).toBe("policy_denied");
-    expect(state.sandbox).toBe(0);
-    expect(state.mint).toBe(0);
-  });
-  it("honors revocation between offering and execution", async () => {
-    const opts = await launch(actor);
-    expect(opts.request.configurable.toolIds).toContain(shell);
-    state.live = false;
-    const result = await opts.createToolExecFn(() => {})(shell, {});
-    expect(result.ok).toBe(false);
-    expect(state.sandbox).toBe(0);
-    expect(state.mint).toBe(0);
-  });
-  it("keeps legacy graphs on the legacy runner", async () => {
-    const scope = {
-      actorUserId: actor,
-      billing: { billingAccountId: "account", virtualKeyId: "key" },
-      usageSource: "litellm",
-      llmService: {},
-    } as any;
-    const provider = new LangGraphInProcProvider(adapter as any, source as any);
-    await runInScope(scope, async () => {
-      await provider.runGraph({ ...req, graphId: "langgraph:red-solver" } as any, {
-        actorUserId: actor,
-      }).final;
-    });
-    expect(state.legacy).toBe(1);
-    expect(state.options).toBeUndefined();
-  });
-  it.each(["principal", "store", "sandbox", "overflow"])(
-    "fails before effects when %s is unavailable",
-    async (failure) => {
-      state.failure = failure;
-      expect(await launch(actor)).toBeUndefined();
-      expect(adapter.executeCompletionUnit).not.toHaveBeenCalled();
-      expect(state.sandbox).toBe(0);
-      expect(state.mint).toBe(0);
-    },
-  );
-  it("fails before the model when the coding grant is missing", async () => {
-    state.live = false;
-    const opts = await launch(actor);
-    expect(opts).toBeUndefined();
-    expect(adapter.executeCompletionUnit).not.toHaveBeenCalled();
-  });
-});
-
 describe("trusted chat workflow identity", () => {
   const identity = {
     nodeId: "red",
@@ -335,14 +164,44 @@ describe("trusted chat workflow identity", () => {
 });
 
 describe("development namespace composition", () => {
-  it("routes Cogni in-process and legacy graphs to dev", () => {
+  it("keeps every graph that needs the guard, the principal or source context in-process, and sends only a plain read-only graph to dev", () => {
     const inproc = { runGraph: vi.fn() };
     const dev = { runGraph: vi.fn() };
-    const router = createLangGraphDispatch(inproc as any, dev as any);
-    router.runGraph({ graphId: "langgraph:cogni" } as any);
-    router.runGraph({ graphId: "langgraph:red-solver" } as any);
-    expect(inproc.runGraph).toHaveBeenCalledOnce();
-    expect(dev.runGraph).toHaveBeenCalledOnce();
+    const catalog = {
+      ...POLY_NODE_LANGGRAPH_CATALOG,
+      "read-only-plain": {
+        displayName: "Plain",
+        description: "plain read-only graph",
+        toolIds: ["core__get_current_time"],
+        graphFactory: POLY_NODE_LANGGRAPH_CATALOG.cogni?.graphFactory as never,
+      },
+    };
+    const router = createLangGraphDispatch(
+      inproc as any,
+      catalog,
+      [...POLY_CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
+      dev as any
+    );
+    for (const graph of [
+      "cogni",
+      "work-prioritizer",
+      "poly-brain",
+      "poly-research",
+      "nonexistent",
+    ])
+      router.runGraph({ graphId: `langgraph:${graph}` } as any);
+    // poly-brain and poly-research list only read-only, scope-free tools and name no principal: only they may use the dev server.
+    expect(inproc.runGraph.mock.calls.map((c) => c[0].graphId)).toEqual([
+      "langgraph:cogni",
+      "langgraph:work-prioritizer",
+      "langgraph:nonexistent",
+    ]);
+    router.runGraph({ graphId: "langgraph:read-only-plain" } as any);
+    expect(dev.runGraph.mock.calls.map((c) => c[0].graphId)).toEqual([
+      "langgraph:poly-brain",
+      "langgraph:poly-research",
+      "langgraph:read-only-plain",
+    ]);
   });
 });
 
@@ -373,68 +232,8 @@ describe("chat ingress identity", () => {
   });
 });
 
-describe("released cognition source binding", () => {
-  const rows = [
-    "skill",
-    "guide",
-    "playbook",
-    "rule",
-    "design",
-    "roadmap",
-    "decision",
-    "reference",
-  ].map((entryType) => ({
-    id: entryType,
-    domain: "red",
-    entryType,
-    useWhen: `use ${entryType}`,
-  }));
-  function fixture() {
-    const store = {
-      currentCommit: vi.fn(async () => "revision"),
-      listDomainsFull: vi.fn(async () => []),
-      listGoverningIndex: vi.fn(async () => rows),
-      getKnowledge: vi.fn(async (_id: string) => null),
-      listActiveGoals: vi.fn(async () => []),
-    };
-    const input = {
-      store,
-      nodeId: "red",
-      origin: "https://red.cognidao.org",
-      mission: "Protect Red",
-      buildSha: "sha",
-    };
-    return { store, input, read: () => loadCogniSourceContext(input as any) };
-  }
-  it("feeds mission and the full governing index to the graph", async () => {
-    const { store, read } = fixture();
-    const opts = await launch(actor, {}, read);
-    expect(opts.sourceContext.governingIndex).toEqual(rows);
-    expect(opts.sourceContext.mission.content).toBe("Protect Red");
-    expect(store.listGoverningIndex).toHaveBeenCalledOnce();
-  });
-  it("does not deny the run when the cognition snapshot is slow or goals are unreadable", async () => {
-    const { store, read } = fixture();
-    store.currentCommit.mockRejectedValue(new Error("head unavailable"));
-    store.listActiveGoals.mockRejectedValue(new Error("unavailable"));
-    const opts = await launch(actor, {}, read);
-    expect(opts.sourceContext.governingIndex).toEqual(rows);
-  });
-  it("refuses an unreadable governing index before model, sandbox or mint", async () => {
-    const { store, read } = fixture();
-    store.listGoverningIndex.mockRejectedValue(new Error("unavailable"));
-    expect(await launch(actor, {}, read)).toBeUndefined();
-    expect(adapter.executeCompletionUnit).not.toHaveBeenCalled();
-    expect(state.sandbox).toBe(0);
-    expect(state.mint).toBe(0);
-  });
-});
-
 describe("released shared coordinator scheduling", () => {
   it("uses the released schedule contracts for purpose lookup, create, readback and reuse", async () => {
-    const graph = await vi.importActual<
-      typeof import("@cogni/langgraph-graphs")
-    >("@cogni/langgraph-graphs");
     const tools = await import("@cogni/shared-ai-tools");
     const core = await import("@cogni/ai-core");
     const grants = await import("@cogni/agent-grants");
@@ -557,7 +356,7 @@ describe("released shared coordinator scheduling", () => {
       };
     };
     const options = {
-      createGraph: graph.SHARED_NODE_CATALOG.cogni.graphFactory,
+      createGraph: SHARED_LANGGRAPH_CATALOG.cogni?.graphFactory,
       program: "cogni",
       trustedActorId: actor,
       trustedProgramId: "cogni",
@@ -598,7 +397,7 @@ describe("released shared coordinator scheduling", () => {
         return { ok: true, value: { items: [], count: 0 } };
       },
     } as any;
-    const runner = graph.createSharedInProcGraphRunner(options);
+    const runner = createInProcGraphRunner(options);
     for await (const _event of runner.stream) {
       /* drain */
     }
@@ -615,7 +414,7 @@ describe("released shared coordinator scheduling", () => {
     expect(lookup.ok && lookup.value.count).toBe(1);
     repeat = true;
     model = 0;
-    const repeatRun = graph.createSharedInProcGraphRunner({
+    const repeatRun = createInProcGraphRunner({
       ...options,
       request: { ...options.request, runId: "shared-repeat" },
     });
@@ -653,14 +452,20 @@ describe("released preflight around eager shared provider", () => {
         return true;
       });
       let innerRuns = 0;
-      const provider = new LangGraphInProcProvider(
-        adapter as any,
-        source as any,
-        async () => null,
-        [{ contract } as any],
-        undefined,
-        deps as any,
-      );
+      // The real package provider and runner: the pair is a preflight decorator over a provider that starts work when called.
+      const provider = new LangGraphInProcProvider({
+        catalog: POLY_NODE_LANGGRAPH_CATALOG,
+        completion: adapter as any,
+        tools: source as any,
+        toolBundle: [{ contract } as any],
+        sourceContext: async () => ({
+          nodeId: "poly",
+          origin: "https://poly.cognidao.org",
+          mission: { content: "Poly", sourceRef: "fixture", buildSha: null },
+          governingIndex: [],
+        }),
+        authority: authority as any,
+      });
       const eager = {
         runGraph: (request: any, ctx: any) => {
           innerRuns++;

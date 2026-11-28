@@ -4,7 +4,7 @@
 /**
  * Module: `@bootstrap/agent-authority`
  * Purpose: This node's authority object: `createAgentToolAuthority` from `@cogni/agent-grants/host` (the guard store, decision log, admin check,
- *   and the role, ask and mine calls) over this node's tool contracts and graph catalog.
+ *   and the role, ask and mine calls) over this node's tool contracts and its one composed graph catalog (`POLY_NODE_LANGGRAPH_CATALOG`).
  * Scope: Composition only. Takes the service-role (BYPASSRLS) postgres.js client from the container: `agent_roles` and `agent_principals` are
  *   deny-all for the app role. Decides nothing itself (ONE_AUTHORIZE_FN lives in the package). No org, service-auth or payer methods: those
  *   join the package after task.0181's release.
@@ -23,11 +23,12 @@ import {
 } from "@cogni/agent-grants/host";
 import type { CatalogBoundTool } from "@cogni/ai-tools";
 import type { NodeAdminAuthority } from "@cogni/knowledge-store";
-import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
 import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared";
 import type { Logger } from "pino";
 
 import { failureFields } from "@/shared/observability";
+
+import { POLY_NODE_LANGGRAPH_CATALOG } from "./ai/node-catalog";
 
 export type { AgentAuthoritySql, AgentToolAuthority };
 
@@ -45,7 +46,7 @@ export function createAgentToolAuthority(deps: {
       id: tool.contract.name,
       requires: tool.contract.requires,
     })),
-    graphs: Object.values(LANGGRAPH_CATALOG),
+    graphs: Object.values(POLY_NODE_LANGGRAPH_CATALOG),
     systemUserIds: [COGNI_SYSTEM_PRINCIPAL_USER_ID],
     failureFields,
   });

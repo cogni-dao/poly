@@ -768,6 +768,11 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         actorUserId,
         requestId: runId,
         ...(sessionId ? { sessionId } : {}),
+        // Set only after `verifyChatActor` accepted this run's launcher proof above; never from the payload. The shell needs it.
+        ...(sharedChat ? { runClaimVerified: true as const } : {}),
+        // A grant-backed run is a validated schedule tick (the grant was checked above): no caller waits on it, so the
+        // provider words its stop as a tick's and ends a run with no usable write tool before any model call.
+        ...(executionGrantId ? { unattended: true as const } : {}),
       },
     );
 

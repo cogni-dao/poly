@@ -428,6 +428,29 @@ describe("shared Cogni receiver ownership", () => {
     );
     expect(mocks.executeCount).toBe(1);
   });
+  it("sets the run claim only after the launcher proof verified, and never from the payload", async () => {
+    const params = { params: Promise.resolve({ graphId: "langgraph:cogni" }) };
+    mocks.createPendingRequest.mockResolvedValue({
+      status: "claimed",
+      request: { runId: RUN_ID },
+    });
+    expect((await POST(request(), params)).status).toBe(200);
+    expect(mocks.executeArgs[1]).toMatchObject({
+      actorUserId: USER_ID,
+      runClaimVerified: true,
+    });
+    // A payload that asserts the claim without the proof is refused before the executor.
+    mocks.executeCount = 0;
+    const forged = await POST(
+      request(`api:${RUN_ID}`, {
+        chatActorProof: undefined,
+        runClaimVerified: true,
+      }),
+      params,
+    );
+    expect(forged.status).toBe(403);
+    expect(mocks.executeCount).toBe(0);
+  });
 });
 
 describe("scheduled Cogni ingress", () => {
@@ -477,6 +500,9 @@ describe("scheduled Cogni ingress", () => {
     expect(mocks.validateGrant).toHaveBeenCalledOnce();
     expect(mocks.executeCount).toBe(1);
     expect(mocks.executeArgs[1]).toMatchObject({ actorUserId: USER_ID });
+    // A validated schedule tick is unattended and never claimed: no caller waits on it, and it never gets the shell.
+    expect(mocks.executeArgs[1]).toMatchObject({ unattended: true });
+    expect(mocks.executeArgs[1]).not.toHaveProperty("runClaimVerified");
   });
   it("persists the trusted complete initiating model and admits the resulting scheduled tick", async () => {
     const { bindScheduleModel } = await import(
@@ -666,8 +692,12 @@ describe("authenticated facade to guarded shared receiver", () => {
         name: shell,
         requires: { scope: "sandbox:exec", kind: "node", subject: "member" },
       };
-      mocks.provider = new LangGraphInProcProvider(
-        {
+      const { POLY_NODE_LANGGRAPH_CATALOG } = await import(
+        "@/bootstrap/ai/node-catalog"
+      );
+      mocks.provider = new LangGraphInProcProvider({
+        catalog: POLY_NODE_LANGGRAPH_CATALOG,
+        completion: {
           executeCompletionUnit: () => {
             model++;
             modelScope = getExecutionScope();
@@ -681,15 +711,13 @@ describe("authenticated facade to guarded shared receiver", () => {
             };
           },
         } as any,
-        {
+        tools: {
           getBoundTool: (id: string) => (id === shell ? runtime : undefined),
           listToolSpecs: () => [],
           hasToolId: (id: string) => id === shell,
         } as any,
-        async () => null,
-        [{ contract }],
-        undefined,
-        {
+        toolBundle: [{ contract }] as any,
+        authority: {
           resolvePrincipal: async () => "principal",
           guardDeps: {
             withStore: async (fn: any) =>
@@ -699,16 +727,18 @@ describe("authenticated facade to guarded shared receiver", () => {
               }),
             adminCheck: async () => "denied",
           },
-          sourceContext: async () => ({
-            nodeId: "red",
-            origin: "https://red.cognidao.org",
-            mission: { content: "Red", sourceRef: "fixture", buildSha: null },
-            governingIndex: [],
-          }),
-          isCodingActor: (id: string) => id === actor,
-          sandboxReady: () => true,
         } as any,
-      );
+        sourceContext: async () => ({
+          nodeId: "poly",
+          origin: "https://poly.cognidao.org",
+          mission: { content: "Poly", sourceRef: "fixture", buildSha: null },
+          governingIndex: [],
+        }),
+        coding: {
+          isCodingActor: (id: string) => id === actor,
+          prerequisitesReady: () => true,
+        },
+      });
       mocks.publish.mockResolvedValue(undefined);
       const ctx: any = {
         reqId: "request",
@@ -764,7 +794,8 @@ describe("authenticated facade to guarded shared receiver", () => {
             },
           });
         } else {
-          expect(result.ok).toBe(false);
+          // A claimed audience caller without the shell grant stops before the first model call and ends cleanly (DENIAL_IS_TERMINAL), not as an error.
+          expect(result.ok).toBe(true);
           expect(model).toBe(0);
         }
         expect([sandbox, mint]).toEqual([0, 0]);

@@ -42,16 +42,11 @@ LangGraph graph definitions and runtime utilities for agentic AI execution. Cont
 
 - **Exports (subpaths):**
   - `@cogni/langgraph-graphs` — Barrel re-export of common types plus:
-    - `LANGGRAPH_CATALOG` — Graph catalog with registered graphs and metadata
+    - `LANGGRAPH_GRAPH_IDS`, `DEFAULT_LANGGRAPH_GRAPH_ID` (`langgraph:cogni`) — Namespaced graph ids. The node's one composed catalog is `POLY_NODE_LANGGRAPH_CATALOG` in the app (`bootstrap/ai/node-catalog.ts`), built with `createNodeCatalog`; this package holds no catalog.
+    - `createLangGraphInProcProvider()`, `createNodeCatalog()`, `createInProcGraphRunner()`, `requiresInProcess()`, `resolveNodeSourceContext()`, `INPROC_EVENTS` and their port types — re-exported from the published `@cogni-dao/langgraph-graphs/inproc` (pinned as `@cogni/shared-langgraph-graphs`). Poly keeps no copy of the provider, the guard or the runner.
     - `McpToolSource` — ToolSourcePort implementation for MCP-discovered tools
     - `loadMcpTools()`, `parseMcpConfigFromEnv()` — MCP client connection + config parsing
     - `McpHttpServerConfig`, `McpSseServerConfig`, `McpStdioServerConfig` — Transport config types
-  - `@cogni/langgraph-graphs/inproc` — InProc execution runner:
-    - `createInProcGraphRunner()` — Generic InProc graph runner factory
-    - `InProcRunnerOptions`, `InProcGraphRequest`, `GraphResult` (includes optional `structuredOutput`) — Runner types
-    - `CompletionFn`, `CompletionResult` — Injected completion function types
-    - `CreateGraphFn`, `CreateGraphOptions` — Graph factory types
-    - `ToolExecFn`, `ToolExecResult` — Tool execution types
   - `@cogni/langgraph-graphs/runtime` — LangChain utilities (split: `core/` generic, `cogni/` ALS-based):
     - **Core (no ALS):** `makeLangChainTool()`, `toLangChainToolsCaptured()`, `toBaseMessage()`, `fromBaseMessage()`, `AsyncQueue`, `makeServerGraph()`
     - **Cogni (uses ALS):** `CogniCompletionAdapter` (with `withStructuredOutput()` for Zod/JSON Schema response parsing), `runWithCogniExecContext()`, `getCogniExecContext()`, `hasCogniExecContext()`, `toLangChainToolsFromContext()`, `makeCogniGraph()`
@@ -69,7 +64,7 @@ LangGraph graph definitions and runtime utilities for agentic AI execution. Cont
     - `GraphInvokeOptions`, `CreateReactAgentGraphOptions` — Factory types
   - **Per-graph tools:** `src/graphs/*/tools.ts` exports `*_TOOL_IDS` constants (e.g., `BRAIN_TOOL_IDS`, `BrainToolId`)
 - **Env/Config keys:** none (all deps injected)
-- **Files considered API:** `index.ts`, `inproc/index.ts`, `runtime/index.ts`, `graphs/index.ts`, `langgraph.json`
+- **Files considered API:** `index.ts`, `runtime/index.ts`, `graphs/index.ts`, `langgraph.json`
 - **Server entrypoints:** `src/graphs/*/server.ts` — LangGraph dev server (uses `makeServerGraph`)
 - **Cogni entrypoints:** `src/graphs/*/cogni-exec.ts` — Cogni executor (uses `makeCogniGraph`)
 
@@ -110,7 +105,7 @@ pnpm --filter @cogni/langgraph-graphs test
 ## Change Protocol
 
 - Update this file when public exports change
-- Changes to graph contracts require updating `src/adapters/server/ai/langgraph/inproc.provider.ts`
+- `LangGraphInProcProvider` in `src/adapters/server/ai/langgraph/inproc.provider.ts` is Poly's thin adapter over the published provider; it holds wiring only (`tests/meta/inproc-provider-no-local-guard.test.ts` fails on local guard code)
 - Coordinate with LANGGRAPH_AI.md invariants
 
 ## Adoption boundary

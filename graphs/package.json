@@ -34,7 +34,7 @@
     "@cogni/poly-node-contracts": "workspace:*",
     "@langchain/langgraph": "1.4.10",
     "zod": "^3.24.0",
-    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz",
+    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz",
     "@cogni/agent-grants": "https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.10.0/cogni-dao-agent-grants-0.10.0.tgz",
     "@cogni/ai-core": "workspace:*",
     "@cogni/local-ai-tools": "workspace:@cogni/ai-tools@*",

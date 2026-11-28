@@ -89,6 +89,7 @@ describe("adapters/server/ai/langgraph/dev/provider", () => {
   let provider: LangGraphDevProvider;
   const config: LangGraphDevProviderConfig = {
     availableGraphs: [TEST_GRAPH_NAME],
+    catalog: { [TEST_GRAPH_NAME]: { toolIds: [] } },
   };
 
   beforeEach(() => {

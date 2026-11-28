@@ -556,8 +556,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/poly-node-contracts
       '@cogni/shared-langgraph-graphs':
-        specifier: https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz
-        version: '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz(oiagbaw7rhohn2dlc7tfanheoq)'
+        specifier: https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz
+        version: '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz(oiagbaw7rhohn2dlc7tfanheoq)'
       '@langchain/langgraph':
         specifier: 1.4.10
         version: 1.4.10(@langchain/core@1.2.14(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.208.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.2.0(@opentelemetry/api@1.9.1))(openai@7.55.0(undici@7.27.2)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(zod@3.25.76)
@@ -890,8 +890,8 @@ importers:
         specifier: https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.16.0/cogni-dao-ai-tools-0.16.0.tgz
         version: '@cogni-dao/ai-tools@https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.16.0/cogni-dao-ai-tools-0.16.0.tgz(@cogni-dao/knowledge-store@https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.21.0/cogni-dao-knowledge-store-0.21.0.tgz)(@cogni-dao/metrics@https://github.com/cogni-dao/node-template/releases/download/metrics-v0.19.0/cogni-dao-metrics-0.19.0.tgz(drizzle-orm@0.44.7(@opentelemetry/api@1.9.1)(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz)'
       '@cogni/shared-langgraph-graphs':
-        specifier: https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz
-        version: '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz(oiagbaw7rhohn2dlc7tfanheoq)'
+        specifier: https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz
+        version: '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz(oiagbaw7rhohn2dlc7tfanheoq)'
       '@langchain/core':
         specifier: 1.2.14
         version: 1.2.14(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.208.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.2.0(@opentelemetry/api@1.9.1))(openai@7.55.0(undici@7.27.2)(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
@@ -1572,12 +1572,12 @@ packages:
     resolution: {integrity: sha512-dZqlXY3nnq+AM1wgwtCJnVvAzSbrIcW3MVw681AZqYhJTHDD2EZcR6S+eScky431N1VpXN/u5EokhoARaDei8A==, tarball: https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.21.0/cogni-dao-knowledge-store-0.21.0.tgz}
     version: 0.21.0
 
-  '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz':
-    resolution: {integrity: sha512-bWksZW0S4vlaPMVwCJ7tqoQqivtaARL/c4rxxVLSeoGkkjx5ez5hjOOGpjrbL+y2bd7X3V8XdXlGSvtoPGTG0g==, tarball: https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz}
-    version: 0.11.0
+  '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz':
+    resolution: {integrity: sha512-rB7KLdLAR++cPQoDjnfx3OYTUmyF+0gHmGnhB1RUJ2Po4gIvcGgsvJMGWFKJQ+C0B1paBh8arOuTtSeJUW6zUg==, tarball: https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz}
+    version: 0.12.0
     peerDependencies:
-      '@cogni/agent-grants': '>=0.8.1'
-      '@cogni/ai-tools': '>=0.16.0'
+      '@cogni/agent-grants': '>=0.8.1 <1'
+      '@cogni/ai-tools': '>=0.16.0 <1'
 
   '@cogni-dao/metrics@https://github.com/cogni-dao/node-template/releases/download/metrics-v0.19.0/cogni-dao-metrics-0.19.0.tgz':
     resolution: {integrity: sha512-Y0iPUkeMhYK91UC+A+ejgkrcIVbGOjcuYbqEjBlJsv/H5qA84m8ITea2XDxKjup9UWG9uYswcg+iJeQZx+6+9A==, tarball: https://github.com/cogni-dao/node-template/releases/download/metrics-v0.19.0/cogni-dao-metrics-0.19.0.tgz}
@@ -10290,7 +10290,7 @@ snapshots:
       postgres: 3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)
       zod: 4.4.3
 
-  '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.11.0/cogni-dao-langgraph-graphs-0.11.0.tgz(oiagbaw7rhohn2dlc7tfanheoq)':
+  '@cogni-dao/langgraph-graphs@https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.12.0/cogni-dao-langgraph-graphs-0.12.0.tgz(oiagbaw7rhohn2dlc7tfanheoq)':
     dependencies:
       '@cogni/agent-grants': '@cogni-dao/agent-grants@https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.10.0/cogni-dao-agent-grants-0.10.0.tgz(drizzle-orm@0.44.7(@opentelemetry/api@1.9.1)(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))'
       '@cogni/ai-tools': '@cogni-dao/ai-tools@https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.16.0/cogni-dao-ai-tools-0.16.0.tgz(@cogni-dao/knowledge-store@https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.21.0/cogni-dao-knowledge-store-0.21.0.tgz)(@cogni-dao/metrics@https://github.com/cogni-dao/node-template/releases/download/metrics-v0.19.0/cogni-dao-metrics-0.19.0.tgz(drizzle-orm@0.44.7(@opentelemetry/api@1.9.1)(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)))(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz)'
