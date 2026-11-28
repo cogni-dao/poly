@@ -19,6 +19,14 @@
  *     use. Which tools a node has BOUND is app runtime policy; which tools a graph could use in principle is the package's business.
  *   - EVERY_OFFERED_TOOL_IS_READ_ONLY - neither Poly graph offers a tool that is not `read_only`, so neither needs a principal or a
  *     `requires` scope. A graph with a non-`read_only` tool needs a seeded principal and a declared scope first.
+ *   - GRAPHS_POLY_DOES_NOT_RUN - the template carried `brain`, `poet`, `ponderer`, `research`, `browser`, `frontend-tester`, `autoresearch-*`,
+ *     `pr-review`, `operating-review` and `git-reviewer`. `cc263599` (story.0090) dropped them and the PR-review dispatch
+ *     (`features/review`, `dispatchPrReview` in the webhook route) with no replacement. They are NOT renamed: `poly-brain` and `poly-research`
+ *     are Poly's own graphs, and the template's `brain` (repo-aware agent) and `research` (plan, search, rank) are different graphs. The
+ *     dispatch only ran when `GH_REVIEW_APP_ID` and `GH_REVIEW_APP_PRIVATE_KEY_BASE64` were set, and neither is declared in Poly's
+ *     `.cogni` secrets or workloads, so no review ever ran. A stored schedule that names a dropped graph (`langgraph:brain` on candidate-a:
+ *     five disabled rows, never run) answers `not_found` at its tick. No migration re-points them; before a production promote, list enabled
+ *     `schedules` rows whose `graph_id` is none of the four graphs below and let their owners decide.
  *   - NO_LANGCHAIN_IN_SRC - graph FACTORIES are imported as opaque values from the graph packages. Nothing here imports `@langchain/*`.
  * Side-effects: none
  * Links: story.0090, task.1791070967, story.5006, https://node-template.cognidao.org/knowledge/inproc-provider-package-design,
